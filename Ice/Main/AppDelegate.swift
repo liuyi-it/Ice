@@ -91,8 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // 短暂延迟提升操作可靠性
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            appState.activate(withPolicy: .regular)
-            appState.openSettingsWindow()
+            appState.activate(withPolicy: .regular, throughDock: true) {
+                appState.openSettingsWindow()
+            }
         }
     }
 }

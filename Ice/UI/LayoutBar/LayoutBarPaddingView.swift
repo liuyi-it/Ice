@@ -131,9 +131,12 @@ final class LayoutBarPaddingView: NSView {
         Task {
             try await Task.sleep(for: .milliseconds(25))
             do {
-                try await appState.itemManager.slowMove(item: item, to: destination)
+                try await appState.itemManager.move(item: item, to: destination)
                 appState.itemManager.removeTempShownItemFromCache(with: item.info)
                 await appState.itemManager.cacheItemsIfNeeded(force: true)
+                guard appState.itemManager.itemCache.section(for: item) == section.name else {
+                    throw MenuBarItemManager.EventError(code: .couldNotComplete, item: item)
+                }
                 appState.layoutManager.recordCurrentLayout(reason: "layout bar drag")
             } catch {
                 Logger.layoutBar.error("Error moving menu bar item: \(error)")

@@ -53,7 +53,14 @@ extension View {
         update binding: Binding<CGRect>
     ) -> some View {
         onFrameChange(in: coordinateSpace) { frame in
-            binding.wrappedValue = frame
+            guard binding.wrappedValue != frame else {
+                return
+            }
+            DispatchQueue.main.async {
+                if binding.wrappedValue != frame {
+                    binding.wrappedValue = frame
+                }
+            }
         }
     }
 }

@@ -46,7 +46,7 @@ final class LayoutBarContainer: NSView {
     /// The amount of space between each arranged view.
     var spacing: CGFloat {
         didSet {
-            layoutArrangedViews()
+            scheduleArrangedViewsLayout()
         }
     }
 
@@ -57,11 +57,15 @@ final class LayoutBarContainer: NSView {
     /// of space between each view.
     var arrangedViews = [LayoutBarItemView]() {
         didSet {
-            layoutArrangedViews(oldViews: oldValue)
+            scheduleArrangedViewsLayout(oldViews: oldValue)
         }
     }
 
     private var cancellables = Set<AnyCancellable>()
+
+    private var isArrangedViewsLayoutScheduled = false
+
+    private var pendingOldViews: [LayoutBarItemView]?
 
     /// Creates a container view with the given app state, section, and spacing.
     ///
@@ -101,15 +105,32 @@ final class LayoutBarContainer: NSView {
             appState.imageCache.$images
                 .removeDuplicates()
                 .sink { [weak self] _ in
-                    guard let self else {
-                        return
-                    }
-                    layoutArrangedViews()
+                    self?.scheduleArrangedViewsLayout()
                 }
                 .store(in: &c)
         }
 
         cancellables = c
+    }
+
+    /// Coalesces view updates onto the next run loop to avoid reentering AppKit layout.
+    private func scheduleArrangedViewsLayout(oldViews: [LayoutBarItemView]? = nil) {
+        if pendingOldViews == nil {
+            pendingOldViews = oldViews
+        }
+        guard !isArrangedViewsLayoutScheduled else {
+            return
+        }
+        isArrangedViewsLayoutScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+            isArrangedViewsLayoutScheduled = false
+            let oldViews = pendingOldViews
+            pendingOldViews = nil
+            layoutArrangedViews(oldViews: oldViews)
+        }
     }
 
     /// Performs layout of the container's arranged views.

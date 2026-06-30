@@ -249,7 +249,11 @@ final class AppState: ObservableObject {
     }
 
     /// 激活应用并设置激活策略
-    func activate(withPolicy policy: NSApplication.ActivationPolicy) {
+    func activate(
+        withPolicy policy: NSApplication.ActivationPolicy,
+        throughDock: Bool = false,
+        completion: (() -> Void)? = nil
+    ) {
         // 在内部上下文中存储应用是否已经激活过的状态，保持隔离
         enum Context {
             static let hasActivated = ObjectStorage<Bool>()
@@ -262,14 +266,18 @@ final class AppState: ObservableObject {
                 NSApp.activate()
             }
             NSApp.setActivationPolicy(policy)
+            guard let completion else {
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: completion)
         }
 
-        if Context.hasActivated.value(for: self) == true {
+        if Context.hasActivated.value(for: self) == true, !throughDock {
             activate()
         } else {
             Context.hasActivated.set(true, for: self)
-            Logger.appState.debug("First time activating app, so going through Dock")
-            // 特殊处理，确保应用首次能够正常激活
+            Logger.appState.debug("Activating app through Dock")
+            // 通过 Dock 返回桌面 Space，避免窗口出现在其他应用的全屏 Space 中。
             NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first?.activate()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 activate()

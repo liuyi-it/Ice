@@ -108,10 +108,11 @@ xcodebuild \
 运行与 CI 相同的 lint：
 
 ```sh
+swiftlint version
 swiftlint --strict
 ```
 
-该命令要求本机已安装 SwiftLint。Xcode 工程内的构建阶段会在 SwiftLint 缺失时跳过，且不是 strict 模式，因此不能替代 CI 的 `swiftlint --strict`。当前 GitHub Actions 只执行 strict lint，不执行构建或静态分析。
+项目统一使用 SwiftLint `0.65.0`，GitHub Actions 通过官方 `ghcr.io/realm/swiftlint:0.65.0` 镜像固定此版本。本机验证前必须确认 `swiftlint version` 同样输出 `0.65.0`；版本不一致的 lint 结果不能作为 CI 验收依据。Xcode 工程内的构建阶段会在 SwiftLint 缺失时跳过，且不是 strict 模式，因此不能替代相同版本的 `swiftlint --strict`。当前 GitHub Actions 只执行 strict lint，不执行构建或静态分析。
 
 需要额外静态检查时：
 
@@ -127,6 +128,76 @@ xcodebuild \
 ```
 
 仓库当前没有测试套件，不要声称“测试通过”。应明确报告执行过的构建、lint、静态分析和人工验证。
+
+## Release 打包、签名、替换与清理
+
+用户要求构建并替换当前运行版本时，必须完整执行以下流程，不得用 Debug 产物代替 Release 产物，也不得仅以“构建成功”作为交付依据。
+
+### 1. 确认签名身份
+
+- 先运行 `security find-identity -v -p codesigning`，确认用户指定的证书是有效 identity（证书和私钥均可用）。
+- 使用用户明确指定的签名证书和对应 `DEVELOPMENT_TEAM`，不要擅自改用 ad hoc 签名或其他 identity。
+- `Apple Development` 可用于本机 Release 构建，但 Xcode 可能自动注入 `com.apple.security.get-task-allow=true`。即使编译配置是 Release，这也会被工具识别为可调试包，因此必须显式禁止注入并在安装前后检查 entitlements。
+- 对外分发和公证应使用 `Developer ID Application`，不能把 `Apple Development` 签名误报为可分发、公证的正式签名。
+- `CSSMERR_TP_NOT_TRUSTED`、`Authority=(unavailable)` 或找不到 identity 时，先检查命令是否有权限访问登录钥匙串、私钥和 WWDR 中间证书。不要通过关闭 Hardened Runtime 来绕过证书链或执行环境问题。
+
+### 2. 构建真正的 Release 产物
+
+清理旧的本次构建目录后，使用 Release 配置、Hardened Runtime 和禁止基础调试 entitlement 注入的设置构建：
+
+```sh
+rm -rf build
+xcodebuild \
+  -project Ice.xcodeproj \
+  -scheme Ice \
+  -configuration Release \
+  -destination 'platform=macOS' \
+  -derivedDataPath build/ReleaseDerivedData \
+  ENABLE_HARDENED_RUNTIME=YES \
+  CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+  DEVELOPMENT_TEAM='<用户的 Team ID>' \
+  CODE_SIGN_STYLE=Manual \
+  CODE_SIGN_IDENTITY='<用户指定的签名 identity>' \
+  build
+```
+
+不得在部署流程中使用 `build/.../Debug/Ice.app`。待安装产物必须来自：
+
+```text
+build/ReleaseDerivedData/Build/Products/Release/Ice.app
+```
+
+### 3. 安装前强制验收
+
+替换应用前必须逐项确认：
+
+- `codesign --verify --deep --strict --verbose=4 <Ice.app>` 成功。
+- `codesign -dv --verbose=4 <Ice.app>` 显示正确的 `Authority`、`TeamIdentifier`，并包含 `flags=0x10000(runtime)`。
+- `codesign -d --entitlements :- <Ice.app>` 中不存在 `com.apple.security.get-task-allow`，尤其不能为 `true`。
+- `Contents/MacOS` 中只有 Release 主可执行文件，不存在 `Ice.debug.dylib` 或 `__preview.dylib`。
+- 使用 `file Contents/MacOS/Ice` 核对目标架构；默认 Release 部署应保留工程生成的 Universal（arm64 + x86_64）产物，除非用户明确要求单一架构。
+- 读取 `CFBundleShortVersionString` 和 `CFBundleVersion`，向用户准确报告版本；代码更新但未调整版本号时，不得声称版本号已升级。
+
+任何一项不符合都不得替换当前应用。
+
+### 4. 替换和启动验证
+
+修改 `/Applications` 和终止当前进程前取得所需授权，然后执行：
+
+```sh
+killall Ice 2>/dev/null || true
+rm -rf /Applications/Ice.app
+ditto build/ReleaseDerivedData/Build/Products/Release/Ice.app /Applications/Ice.app
+open /Applications/Ice.app
+```
+
+启动后必须从 `/Applications/Ice.app` 再次执行严格签名、Hardened Runtime、entitlements、架构和包内文件检查，不能复用安装前结果。使用 `pgrep` 确认新进程的可执行路径确实是 `/Applications/Ice.app/Contents/MacOS/Ice`，并检查近期系统日志和崩溃报告，确认没有即时启动失败。
+
+### 5. 清理和最终报告
+
+- 安装后验证全部完成，才能删除 `build/` 和本次流程在 `/private/tmp` 创建的已知构建日志；不要用宽泛通配符删除不属于本次任务的文件。
+- 清理后确认 `build/` 不存在、Release 进程仍在运行，并执行 `git status -sb` 和 `git diff --check`。
+- 最终报告必须明确写出：Release 配置、架构、版本号、签名 identity 类型、Hardened Runtime 状态、`get-task-allow` 已移除、严格签名结果、运行进程和构建产物清理结果。
 
 ## 验证要求
 

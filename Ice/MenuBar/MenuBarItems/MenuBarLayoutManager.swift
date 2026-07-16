@@ -235,7 +235,7 @@ final class MenuBarLayoutManager {
 
         if
             let iceIcon = cache.managedItems.first(where: { $0.info == .iceIcon }),
-            cache.section(for: iceIcon) != .visible,
+            cache.managedItems(for: .visible).first != iceIcon,
             let hiddenControlItem = controlItem(.hidden, in: allItems)
         {
             return (iceIcon, .rightOfItem(hiddenControlItem))

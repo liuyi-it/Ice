@@ -647,6 +647,19 @@ extension MenuBarItemManager {
         }
     }
 
+    /// Returns a destination whose target is present in the current menu bar.
+    private func currentDestination(
+        matching destination: MoveDestination,
+        in items: [MenuBarItem]
+    ) -> MoveDestination? {
+        switch destination {
+        case .leftOfItem(let targetItem):
+            currentItem(matching: targetItem, in: items).map(MoveDestination.leftOfItem)
+        case .rightOfItem(let targetItem):
+            currentItem(matching: targetItem, in: items).map(MoveDestination.rightOfItem)
+        }
+    }
+
     /// Returns a Boolean value that indicates whether the given item is in the
     /// correct position for the given destination.
     ///
@@ -1531,8 +1544,13 @@ extension MenuBarItemManager {
             else {
                 continue
             }
+            guard let destination = currentDestination(matching: context.returnDestination, in: items) else {
+                Logger.itemManager.warning("No return destination for \(item.logString)")
+                failedContexts.append(context)
+                continue
+            }
             do {
-                try await move(item: item, to: context.returnDestination)
+                try await move(item: item, to: destination)
             } catch {
                 Logger.itemManager.error("Failed to rehide \(item.logString) (error: \(error))")
                 failedContexts.append(context)

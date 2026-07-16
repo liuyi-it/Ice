@@ -19,7 +19,10 @@ struct AboutSettingsPane: View {
     }
 
     private var contributeURL: URL {
-        URL(string: "https://github.com/jordanbaird/Ice")!
+        guard let url = URL(string: "https://github.com/jordanbaird/Ice") else {
+            preconditionFailure("Invalid static contribution URL")
+        }
+        return url
     }
 
     private var issuesURL: URL {
@@ -27,7 +30,10 @@ struct AboutSettingsPane: View {
     }
 
     private var donateURL: URL {
-        URL(string: "https://icemenubar.app/Donate")!
+        guard let url = URL(string: "https://icemenubar.app/Donate") else {
+            preconditionFailure("Invalid static donation URL")
+        }
+        return url
     }
 
     private var lastUpdateCheckString: String {

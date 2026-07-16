@@ -253,17 +253,20 @@ final class MenuBarLayoutManager {
                 }
             }
 
-            if let misordered = firstMisorderedItem(in: section, desired: desired, cache: cache),
-               let destination = destination(
-                    for: misordered.item,
-                    identity: misordered.identity,
-                    in: section,
-                    desired: desired,
-                    cache: cache,
-                    allItems: allItems
-               ) {
-                return (misordered.item, destination)
+            guard let misordered = firstMisorderedItem(in: section, desired: desired, cache: cache) else {
+                continue
             }
+            guard let destination = destination(
+                for: misordered.item,
+                identity: misordered.identity,
+                in: section,
+                desired: desired,
+                cache: cache,
+                allItems: allItems
+            ) else {
+                continue
+            }
+            return (misordered.item, destination)
         }
 
         return nil

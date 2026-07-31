@@ -13,6 +13,12 @@ final class MenuBarAppearanceEditorPanel: NSPanel {
     /// The shared app state.
     private weak var appState: AppState?
 
+    /// The currently shown appearance editor popover.
+    ///
+    /// Retained so that a space change can close it: closing only the panel
+    /// would leave the popover (and its color panel side effects) visible.
+    private weak var popover: MenuBarAppearanceEditorPopover?
+
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
@@ -35,7 +41,13 @@ final class MenuBarAppearanceEditorPanel: NSPanel {
         NSWorkspace.shared.notificationCenter
             .publisher(for: NSWorkspace.activeSpaceDidChangeNotification)
             .sink { [weak self] _ in
-                self?.orderOut(self)
+                guard let self else {
+                    return
+                }
+                // Close the popover first so `popoverDidClose` runs while the
+                // panel (its delegate) is still alive; then hide the panel.
+                self.popover?.performClose(nil)
+                self.orderOut(self)
                 NSColorPanel.shared.close()
                 NSColorPanel.shared.hidesOnDeactivate = true
             }
@@ -56,6 +68,7 @@ final class MenuBarAppearanceEditorPanel: NSPanel {
         }
         setFrameOrigin(CGPoint(x: screen.frame.midX - frame.width / 2, y: screen.frame.maxY - menuBarHeight))
         let popover = MenuBarAppearanceEditorPopover(appState: appState)
+        self.popover = popover
         popover.delegate = self
         popover.show(relativeTo: .zero, of: contentView, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()

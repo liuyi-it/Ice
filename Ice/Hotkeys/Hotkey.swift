@@ -36,6 +36,11 @@ final class Hotkey: ObservableObject {
     func enable() {
         disable()
         listener = Listener(hotkey: self, eventKind: .keyDown, appState: appState)
+        if listener == nil, keyCombination != nil {
+            // Registration failed (e.g. the key combination conflicts with
+            // another hotkey). Log it, since the failure is otherwise silent.
+            Logger.hotkey.warning("Failed to enable hotkey for action \(action)")
+        }
     }
 
     func disable() {

@@ -54,28 +54,24 @@ final class IceBarPanel: NSPanel {
         }
         .store(in: &c)
 
-        if
-            let section = appState?.menuBarManager.section(withName: .hidden),
-            let window = section.controlItem.window
-        {
-            window.publisher(for: \.frame)
+        if let section = appState?.menuBarManager.section(withName: .hidden) {
+            // Observe the control item's frame (which chains button → window →
+            // frame and keeps working when the status item window is created
+            // late or rebuilt on macOS 26) instead of pinning a single window
+            // object at setup time. A nil frame means the control item's
+            // window is off-screen, i.e. the menu bar is currently hidden.
+            section.controlItem.$windowFrame
                 .debounce(for: 0.1, scheduler: DispatchQueue.main)
-                .sink { [weak self, weak window] _ in
+                .sink { [weak self] windowFrame in
                     guard
                         let self,
                         let appState,
                         // Only continue if the menu bar is automatically hidden, as Ice
                         // can't currently display its menu bar items.
                         appState.menuBarManager.isMenuBarHiddenBySystemUserDefaults,
-                        let info = { () -> WindowInfo? in
-                            guard let window else { return nil }
-                            let wn = window.windowNumber
-                            guard wn >= 0, wn <= UInt32.max else { return nil }
-                            return WindowInfo(windowID: CGWindowID(wn))
-                        }(),
                         // Window being offscreen means the menu bar is currently hidden.
                         // Close the bar, as things will start to look weird if we don't.
-                        !info.isOnScreen
+                        windowFrame == nil
                     else {
                         return
                     }
@@ -169,8 +165,19 @@ final class IceBarPanel: NSPanel {
 
         await appState.itemManager.cacheItemsIfNeeded()
 
+        // The panel may have been closed while we were awaiting (e.g. by a
+        // space change or the menu bar being hidden). Don't resurrect it with
+        // a stale section and inconsistent navigation state.
+        guard appState.navigationState.isIceBarPresented, currentSection == section else {
+            return
+        }
+
         if ScreenCapture.cachedCheckPermissions() {
             await appState.imageCache.updateCache()
+        }
+
+        guard appState.navigationState.isIceBarPresented, currentSection == section else {
+            return
         }
 
         contentView = IceBarHostingView(appState: appState, colorManager: colorManager, screen: screen, section: section) { [weak self] in

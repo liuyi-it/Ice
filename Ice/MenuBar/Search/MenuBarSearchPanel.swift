@@ -105,6 +105,13 @@ final class MenuBarSearchPanel: NSPanel {
             await appState.imageCache.updateCache()
         }
 
+        // The panel may have been closed while we were awaiting (e.g. by a
+        // space change). Don't resurrect it: `close()` clears the content view
+        // and navigation state, so re-showing would leave stale state.
+        guard appState.navigationState.isSearchPresented else {
+            return
+        }
+
         let hostingView = MenuBarSearchHostingView(appState: appState, panel: self)
         hostingView.setFrameSize(hostingView.intrinsicContentSize)
         setFrame(hostingView.frame, display: true)

@@ -66,6 +66,12 @@ final class AppState: ObservableObject {
     /// 内部观察者存储容器
     private var cancellables = Set<AnyCancellable>()
 
+    /// 设置窗口可见性观察者
+    ///
+    /// 与 `configureCancellables()` 解耦维护：`assignSettingsWindow` 每次重建
+    /// 设置窗口时都会更新它，不存在窗口赋值与订阅建立之间的空窗。
+    private var settingsWindowVisibilityCancellable: AnyCancellable?
+
     /// 应用是否运行在SwiftUI预览模式下
     let isPreview: Bool = {
         #if DEBUG
@@ -120,18 +126,6 @@ final class AppState: ObservableObject {
             }
             .store(in: &c)
 
-        if let settingsWindow {
-            settingsWindow.publisher(for: \.isVisible)
-                .debounce(for: 0.05, scheduler: DispatchQueue.main)
-                .sink { [weak self] isVisible in
-                    guard let self else {
-                        return
-                    }
-                    navigationState.isSettingsPresented = isVisible
-                }
-                .store(in: &c)
-        }
-
         Publishers.Merge(
             navigationState.$isAppFrontmost,
             navigationState.$isSettingsPresented
@@ -144,9 +138,13 @@ final class AppState: ObservableObject {
             else {
                 return
             }
+            // Resolve the lazy imageCache on the main actor before handing it
+            // to the detached task: lazy initialization is not thread-safe, and
+            // racing `performSetup()` would split the cache into two instances.
+            let imageCache = self.imageCache
             Task.detached {
                 if ScreenCapture.cachedCheckPermissions(reset: true) {
-                    await self.imageCache.updateCacheWithoutChecks(sections: MenuBarSection.Name.allCases)
+                    await imageCache.updateCacheWithoutChecks(sections: MenuBarSection.Name.allCases)
                 }
             }
         }
@@ -180,6 +178,10 @@ final class AppState: ObservableObject {
     func performSetup() {
         configureCancellables()
         permissionsManager.stopAllChecks()
+        // Keep detecting permission revocations while running (menu bar apps
+        // rarely become active, so the app-lifecycle refresh alone is not
+        // enough).
+        permissionsManager.startRevocationChecks()
         menuBarManager.performSetup()
         appearanceManager.performSetup()
         eventManager.performSetup()
@@ -207,6 +209,18 @@ final class AppState: ObservableObject {
             return
         }
         settingsWindow = window
+        menuBarManager.registerSettingsWindowObserver()
+
+        // Track visibility directly on window assignment rather than through
+        // `configureCancellables()`, which only runs when the window already
+        // exists and would leave a gap between assignment and subscription.
+        settingsWindowVisibilityCancellable?.cancel()
+        settingsWindowVisibilityCancellable = window.publisher(for: \.isVisible)
+            .debounce(for: 0.05, scheduler: DispatchQueue.main)
+            .sink { [weak self] isVisible in
+                self?.navigationState.isSettingsPresented = isVisible
+            }
+
         configureCancellables()
     }
 

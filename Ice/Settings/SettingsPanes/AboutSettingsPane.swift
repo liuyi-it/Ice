@@ -13,9 +13,8 @@ struct AboutSettingsPane: View {
         appState.updatesManager
     }
 
-    private var acknowledgementsURL: URL {
-        // swiftlint:disable:next force_unwrapping
-        Bundle.main.url(forResource: "Acknowledgements", withExtension: "pdf")!
+    private var acknowledgementsURL: URL? {
+        Bundle.main.url(forResource: "Acknowledgements", withExtension: "pdf")
     }
 
     private var contributeURL: URL {
@@ -146,7 +145,9 @@ struct AboutSettingsPane: View {
             }
             Spacer()
             Button("致谢") {
-                NSWorkspace.shared.open(acknowledgementsURL)
+                if let acknowledgementsURL {
+                    NSWorkspace.shared.open(acknowledgementsURL)
+                }
             }
             Button("贡献") {
                 openURL(contributeURL)

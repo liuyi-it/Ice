@@ -29,6 +29,16 @@ final class PermissionsManager: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
+    /// A low-frequency timer that detects permissions being revoked while the
+    /// app runs in the background.
+    ///
+    /// A menu bar app is rarely "become active", so the only re-check after
+    /// `stopAllChecks()` would otherwise be `applicationDidBecomeActive`. If
+    /// the user revokes a permission in System Settings while Ice is idle, the
+    /// stale "has permissions" state would silently leave dependent features
+    /// broken.
+    private var revocationCheckCancellable: AnyCancellable?
+
     var requiredPermissions: [Permission] {
         allPermissions.filter { $0.isRequired }
     }
@@ -74,6 +84,20 @@ final class PermissionsManager: ObservableObject {
         for permission in allPermissions {
             permission.stopCheck()
         }
+    }
+
+    /// Starts periodic permission revocation checks.
+    ///
+    /// Called after setup, once the app is running. Unlike the one-second
+    /// polling used while waiting for permissions to be granted, this only
+    /// refreshes the state; it does not interrupt the user.
+    func startRevocationChecks() {
+        revocationCheckCancellable?.cancel()
+        revocationCheckCancellable = Timer.publish(every: 5, on: .main, in: .default)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.refreshPermissions()
+            }
     }
 
     /// Refreshes the current permissions state.

@@ -54,7 +54,10 @@ final class MenuBarItemManager: ObservableObject {
 
         /// Returns the name of the section for the given menu bar item.
         func section(for item: MenuBarItem) -> MenuBarSection.Name? {
-            for (section, items) in self.items where items.contains(where: { $0.info == item.info }) {
+            // Iterate in a fixed order: Dictionary iteration order is not
+            // guaranteed, which would make the result nondeterministic when
+            // two sections contain items sharing the same info.
+            for section in MenuBarSection.Name.allCases where self[section].contains(where: { $0.info == item.info }) {
                 return section
             }
             return nil
@@ -115,6 +118,17 @@ final class MenuBarItemManager: ObservableObject {
     /// A timer that determines when to rehide the temporarily shown items.
     private var tempShownItemsTimer: Timer?
 
+    /// Number of consecutive rehide failures per temporarily shown item.
+    ///
+    /// Items that permanently disappear (e.g. their app quit) are dropped after
+    /// ``maxRehideFailures`` consecutive failures instead of being retried
+    /// forever every 3 seconds.
+    private var rehideFailureCounts = [CGWindowID: Int]()
+
+    /// The maximum number of consecutive rehide failures before a temporarily
+    /// shown item's context is dropped.
+    private let maxRehideFailures = 3
+
     /// The last time a menu bar item was moved.
     private var lastItemMoveStartDate: Date?
 
@@ -131,6 +145,7 @@ final class MenuBarItemManager: ObservableObject {
     /// Event type mask for tracking mouse events.
     private let mouseTrackingMask: NSEvent.EventTypeMask = [
         .mouseMoved,
+        .leftMouseDragged,
         .leftMouseDown,
         .rightMouseDown,
         .otherMouseDown,
@@ -211,7 +226,7 @@ final class MenuBarItemManager: ObservableObject {
                 return
             }
             switch event.type {
-            case .mouseMoved:
+            case .mouseMoved, .leftMouseDragged:
                 lastMouseMoveStartDate = .now
             case .leftMouseDown, .rightMouseDown, .otherMouseDown:
                 isMouseButtonDown = true
@@ -303,7 +318,9 @@ extension MenuBarItemManager {
                         let section = cache.section(for: targetItem),
                         let index = cache[section].firstIndex(matching: targetItem.info)
                     {
-                        let clampedIndex = (index - 1).clamped(to: cache[section].startIndex...cache[section].endIndex)
+                        // The item belongs to the right of the target, so insert
+                        // after it (index + 1), not before it.
+                        let clampedIndex = (index + 1).clamped(to: cache[section].startIndex...cache[section].endIndex)
                         cache[section].insert(item, at: clampedIndex)
                     }
                 }
@@ -559,20 +576,13 @@ extension MenuBarItemManager {
                 return
             }
 
-            var cancellable: AnyCancellable?
-
-            await withCheckedContinuation { continuation in
-                cancellable = Publishers.Merge(
-                    UniversalEventMonitor.publisher(for: .flagsChanged),
-                    RunLoopLocalEventMonitor.publisher(for: .flagsChanged, mode: .eventTracking)
-                )
-                .removeDuplicates()
-                .sink { _ in
-                    if NSEvent.modifierFlags.isEmpty {
-                        cancellable?.cancel()
-                        continuation.resume()
-                    }
-                }
+            // Poll instead of suspending on a continuation: a continuation does
+            // not respond to task cancellation, so cancelling the waiting task
+            // while a modifier key remains pressed would leak the continuation
+            // and its event monitor subscriptions forever.
+            while !NSEvent.modifierFlags.isEmpty {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(10))
             }
         }
     }
@@ -825,6 +835,12 @@ extension MenuBarItemManager {
 
                 // Verify that this is the null event.
                 guard rEvent.getIntegerValueField(.eventSourceUserData) == nullUserData else {
+                    return nil
+                }
+
+                // Ensure the tap is enabled, preventing the real event from being
+                // posted after the timeout path has already disabled the tap.
+                guard proxy.isEnabled else {
                     return nil
                 }
 
@@ -1257,6 +1273,14 @@ extension MenuBarItemManager {
             MouseCursor.show()
         }
 
+        guard let appState else {
+            throw EventError(code: .invalidAppState, item: item)
+        }
+        appState.eventManager.stopAll()
+        defer {
+            appState.eventManager.startAll()
+        }
+
         do {
             Logger.itemManager.info("Clicking \(item.logString) with \(mouseButton.logString)")
             try await postEventAndWaitToReceive(
@@ -1538,22 +1562,36 @@ extension MenuBarItemManager {
         }
 
         while let context = tempShownItemContexts.popLast() {
+            let recordFailure = {
+                let count = (self.rehideFailureCounts[context.windowID] ?? 0) + 1
+                if count >= self.maxRehideFailures {
+                    self.rehideFailureCounts.removeValue(forKey: context.windowID)
+                    Logger.itemManager.warning("Dropping rehide context for \(context.info) after \(count) consecutive failures")
+                } else {
+                    self.rehideFailureCounts[context.windowID] = count
+                    failedContexts.append(context)
+                }
+            }
+
             guard
                 let item = items.first(where: { $0.windowID == context.windowID })
                     ?? items.first(where: { $0.info == context.info })
             else {
+                Logger.itemManager.debug("Item not found for rehide context, will retry: \(context.info)")
+                recordFailure()
                 continue
             }
             guard let destination = currentDestination(matching: context.returnDestination, in: items) else {
                 Logger.itemManager.warning("No return destination for \(item.logString)")
-                failedContexts.append(context)
+                recordFailure()
                 continue
             }
             do {
                 try await move(item: item, to: destination)
+                self.rehideFailureCounts.removeValue(forKey: context.windowID)
             } catch {
                 Logger.itemManager.error("Failed to rehide \(item.logString) (error: \(error))")
-                failedContexts.append(context)
+                recordFailure()
             }
         }
 

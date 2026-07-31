@@ -130,13 +130,6 @@ final class MenuBarManager: ObservableObject {
             }
             .store(in: &c)
 
-        appState?.settingsWindow?.publisher(for: \.isVisible)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.updateAverageColorInfo()
-            }
-            .store(in: &c)
-
         Timer.publish(every: 5, on: .main, in: .default)
             .autoconnect()
             .sink { [weak self] _ in
@@ -221,6 +214,31 @@ final class MenuBarManager: ObservableObject {
             .store(in: &c)
 
         cancellables = c
+    }
+
+    /// The settings window visibility observer.
+    ///
+    /// Held separately from ``cancellables`` so that it can be replaced each
+    /// time the settings window is (re)created. The KVO publisher strongly
+    /// retains the window it observes; appending a new subscription on every
+    /// window creation would leak every previous settings window.
+    private var settingsWindowObserver: AnyCancellable?
+
+    /// Registers the settings window visibility observer.
+    ///
+    /// This must be called after the settings window has been assigned to
+    /// `AppState`, because ``configureCancellables()`` runs during setup
+    /// when `settingsWindow` is still `nil`.
+    func registerSettingsWindowObserver() {
+        settingsWindowObserver?.cancel()
+        guard let settingsWindow = appState?.settingsWindow else {
+            return
+        }
+        settingsWindowObserver = settingsWindow.publisher(for: \.isVisible)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateAverageColorInfo()
+            }
     }
 
     /// 更新菜单栏平均颜色信息

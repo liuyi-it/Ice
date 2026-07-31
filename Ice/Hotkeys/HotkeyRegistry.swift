@@ -156,7 +156,13 @@ final class HotkeyRegistry {
         )
 
         guard status == noErr else {
-            Logger.hotkeyRegistry.error("Hotkey registration failed with status \(status)")
+            if status == eventHotKeyExistsErr {
+                Logger.hotkeyRegistry.error(
+                    "Hotkey registration failed: the key combination (key: \(keyCombination.key.rawValue), modifiers: \(keyCombination.modifiers.carbonFlags)) is already registered by Ice or another app. Assigning a different key combination to this hotkey (or the conflicting one) and assigning it again will re-register it."
+                )
+            } else {
+                Logger.hotkeyRegistry.error("Hotkey registration failed with status \(status)")
+            }
             return nil
         }
 

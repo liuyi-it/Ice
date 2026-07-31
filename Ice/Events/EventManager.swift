@@ -16,7 +16,61 @@ final class EventManager {
     private var cancellables = Set<AnyCancellable>()
 
     /// Whether a Command-drag menu bar item session is in progress.
-    private var isDraggingMenuBarItem = false
+    ///
+    /// Read by the layout manager so that automatic layout restoration is
+    /// suppressed while the user is dragging.
+    private(set) var isDraggingMenuBarItem = false
+
+    /// The date when the user's last Command+drag session ended.
+    ///
+    /// Used by the layout manager to suppress restoration during a cooldown
+    /// window, preventing the automatic restore loop from undoing the user's
+    /// manual drag before the new layout can be recorded.
+    private(set) var lastUserDragEndDate: Date?
+
+    /// The number of outstanding `stopAll()` calls without a matching `startAll()`.
+    ///
+    /// `stopAll()`/`startAll()` are not reentrant: concurrent operations (e.g.
+    /// `click` and `move`) would otherwise restart the monitors before a
+    /// synthetic click has been delivered. Counting ensures the monitors only
+    /// restart when the outermost operation completes.
+    private var stopAllCount = 0
+
+    /// The currently running show-on-hover Task, if any.
+    ///
+    /// Replaced each time the hover state crosses between "inside" and
+    /// "outside" of the empty menu bar space.
+    private var hoverTask: Task<Void, Never>?
+
+    /// Whether the currently pending ``hoverTask`` (if any) is showing the
+    /// hidden section (`true`) or hiding it (`false`).
+    ///
+    /// Only the first mouse-moved event for each hover state creates a task;
+    /// subsequent events for the same state are ignored so that continuous
+    /// mouse movement does not perpetually delay the hover action.
+    private var isHoverTaskShowing = false
+
+    /// The currently running show-on-click Task, if any.
+    private var showOnClickTask: Task<Void, Never>?
+
+    /// The currently running smart rehide Task, if any.
+    private var smartRehideTask: Task<Void, Never>?
+
+    /// The currently running record-layout Task, if any.
+    private var recordLayoutTask: Task<Void, Never>?
+
+    /// Cached menu bar items for throttling hover queries.
+    ///
+    /// `isMouseInsideMenuBarItem` runs a full window-server query (plus one IPC
+    /// round trip per window) on every mouse-moved event; throttling avoids
+    /// stalling the main thread while the pointer hovers over the menu bar.
+    private var cachedMenuBarItems: (date: Date, screenID: CGDirectDisplayID, items: [MenuBarItem])?
+
+    /// Cached application menu frame for throttling hover queries.
+    ///
+    /// `isMouseInsideApplicationMenu` performs an accessibility query on every
+    /// mouse-moved event; throttling avoids stalling the main thread.
+    private var cachedApplicationMenuFrame: (date: Date, screenID: CGDirectDisplayID, frame: CGRect?)?
 
     // MARK: Monitors
 
@@ -129,6 +183,10 @@ final class EventManager {
 
     /// Starts all monitors.
     func startAll() {
+        stopAllCount = max(0, stopAllCount - 1)
+        guard stopAllCount == 0 else {
+            return
+        }
         for monitor in allMonitors {
             monitor.start()
         }
@@ -136,6 +194,10 @@ final class EventManager {
 
     /// Stops all monitors.
     func stopAll() {
+        stopAllCount += 1
+        guard stopAllCount == 1 else {
+            return
+        }
         for monitor in allMonitors {
             monitor.stop()
         }
@@ -157,14 +219,21 @@ extension EventManager {
             return
         }
 
-        Task {
+        // Capture modifier flags immediately before the delay, so the state
+        // reflects what the user held when clicking, not 50ms later.
+        let modifiers = NSEvent.modifierFlags
+
+        // Cancel any pending toggle from a previous click, so rapid double
+        // clicks do not toggle the section twice (which would cancel out).
+        showOnClickTask?.cancel()
+        showOnClickTask = Task {
             // Short delay helps the toggle action feel more natural.
             try? await Task.sleep(for: .milliseconds(50))
 
-            if NSEvent.modifierFlags == .control {
+            if modifiers == .control {
                 handleShowRightClickMenu()
             } else if
-                NSEvent.modifierFlags == .option,
+                modifiers == .option,
                 appState.settingsManager.advancedSettingsManager.canToggleAlwaysHiddenSection
             {
                 if let alwaysHiddenSection = appState.menuBarManager.section(withName: .alwaysHidden) {
@@ -210,7 +279,10 @@ extension EventManager {
             return
         }
 
-        Task {
+        // Cancel any pending rehide from a previous click, as its window
+        // context is stale once a new click has occurred.
+        smartRehideTask?.cancel()
+        smartRehideTask = Task {
             let initialSpaceID = Bridging.activeSpaceID
 
             // Sleep for a bit to give the window under the mouse a chance to focus.
@@ -315,11 +387,18 @@ extension EventManager {
         isDraggingMenuBarItem = false
         appState.appearanceManager.setIsDraggingMenuBarItem(false)
 
+        if shouldRecordLayout {
+            lastUserDragEndDate = .now
+        }
+
         guard shouldRecordLayout else {
             return
         }
 
-        Task {
+        // Cancel any pending record from a previous drag, so the layout is
+        // only recorded from the most recent drag's cache.
+        recordLayoutTask?.cancel()
+        recordLayoutTask = Task {
             try? await Task.sleep(for: .milliseconds(500))
             await appState.itemManager.cacheItemsIfNeeded(force: true)
             appState.layoutManager.recordCurrentLayout(reason: "menu bar command drag")
@@ -381,12 +460,31 @@ extension EventManager {
 
         let delay = appState.settingsManager.advancedSettingsManager.showOnHoverDelay
 
-        Task {
-            if hiddenSection.isHidden {
+        // Only the first mouse-moved event for each hover state creates a task.
+        // Cancelling on every mouse-moved event would perpetually restart the
+        // delay while the mouse keeps moving, so the hover action would never
+        // fire. The pending task re-validates the mouse position after the
+        // delay, so ignoring same-state events is safe.
+        let shouldShow = hiddenSection.isHidden
+        if let hoverTask, isHoverTaskShowing == shouldShow {
+            return
+        }
+
+        // The hover state crossed over (e.g. entered or left the empty menu bar
+        // space): cancel the pending task of the previous state and start a new
+        // one for the current state.
+        hoverTask?.cancel()
+        isHoverTaskShowing = shouldShow
+        hoverTask = Task {
+            if shouldShow {
                 guard self.isMouseInsideEmptyMenuBarSpace else {
                     return
                 }
                 try? await Task.sleep(for: .seconds(delay))
+                // Make sure the task was not cancelled during the delay.
+                guard !Task.isCancelled else {
+                    return
+                }
                 // Make sure the mouse is still inside.
                 guard self.isMouseInsideEmptyMenuBarSpace else {
                     return
@@ -400,6 +498,10 @@ extension EventManager {
                     return
                 }
                 try? await Task.sleep(for: .seconds(delay))
+                // Make sure the task was not cancelled during the delay.
+                guard !Task.isCancelled else {
+                    return
+                }
                 // Make sure the mouse is still outside.
                 guard
                     !self.isMouseInsideMenuBar,
@@ -487,9 +589,23 @@ extension EventManager {
         guard
             let mouseLocation = MouseCursor.locationCoreGraphics,
             let screen = bestScreen,
-            let appState,
-            var applicationMenuFrame = appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
+            let appState
         else {
+            return false
+        }
+        let displayID = screen.displayID
+        let applicationMenuFrame: CGRect?
+        if
+            let cached = cachedApplicationMenuFrame,
+            cached.screenID == displayID,
+            Date.now.timeIntervalSince(cached.date) < 0.05
+        {
+            applicationMenuFrame = cached.frame
+        } else {
+            applicationMenuFrame = appState.menuBarManager.getApplicationMenuFrame(for: displayID)
+            cachedApplicationMenuFrame = (Date.now, displayID, applicationMenuFrame)
+        }
+        guard var applicationMenuFrame else {
             return false
         }
         applicationMenuFrame.size.width += applicationMenuFrame.origin.x - screen.frame.origin.x
@@ -506,7 +622,18 @@ extension EventManager {
         else {
             return false
         }
-        let menuBarItems = MenuBarItem.getMenuBarItems(on: screen.displayID, onScreenOnly: true, activeSpaceOnly: true)
+        let displayID = screen.displayID
+        let menuBarItems: [MenuBarItem]
+        if
+            let cached = cachedMenuBarItems,
+            cached.screenID == displayID,
+            Date.now.timeIntervalSince(cached.date) < 0.05
+        {
+            menuBarItems = cached.items
+        } else {
+            menuBarItems = MenuBarItem.getMenuBarItems(on: displayID, onScreenOnly: true, activeSpaceOnly: true)
+            cachedMenuBarItems = (Date.now, displayID, menuBarItems)
+        }
         return menuBarItems.contains { $0.frame.contains(mouseLocation) }
     }
 

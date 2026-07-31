@@ -214,13 +214,15 @@ final class MenuBarItemImageCache: ObservableObject {
 
         let validItemInfos = Set(await appState.itemManager.itemCache.allItems.map(\.info))
 
-        await MainActor.run { [newImages, validItemInfos] in
+        // Update the published images and the non-atomic screen properties on
+        // the main actor together: this method runs on a detached task while
+        // SwiftUI views read `screen`/`menuBarHeight` on the main thread.
+        await MainActor.run { [newImages, validItemInfos, screen] in
             images = images.filter { validItemInfos.contains($0.key) }
             images.merge(newImages) { (_, new) in new }
+            self.screen = screen
+            self.menuBarHeight = screen.getMenuBarHeight()
         }
-
-        self.screen = screen
-        self.menuBarHeight = screen.getMenuBarHeight()
     }
 
     /// Updates the cache for the given sections, if necessary.
@@ -281,6 +283,102 @@ final class MenuBarItemImageCache: ObservableObject {
         }
 
         await updateCache(sections: sectionsNeedingDisplay)
+    }
+
+    /// Captures images for the given items without requiring any UI to be visible.
+    ///
+    /// This is used for identity resolution when an app restarts with a new windowID
+    /// on macOS 26. The captured images are stored into the main cache so that
+    /// `imageHash(for:)` can find them for orphan identity matching.
+    func captureImagesForIdentityResolution(items: [MenuBarItem]) async {
+        guard
+            let screen = NSScreen.main,
+            !items.isEmpty
+        else {
+            return
+        }
+
+        let backingScaleFactor = screen.backingScaleFactor
+        let displayBounds = CGDisplayBounds(screen.displayID)
+        let option: CGWindowImageOption = [.boundsIgnoreFraming, .bestResolution]
+        let defaultItemThickness = NSStatusBar.system.thickness * backingScaleFactor
+
+        var itemInfos = [CGWindowID: MenuBarItemInfo]()
+        var itemFrames = [CGWindowID: CGRect]()
+        var windowIDs = [CGWindowID]()
+        var frame = CGRect.null
+
+        for item in items {
+            let windowID = item.windowID
+            guard
+                let itemFrame = Bridging.getWindowFrame(for: windowID),
+                itemFrame.minY == displayBounds.minY
+            else {
+                continue
+            }
+            itemInfos[windowID] = item.info
+            itemFrames[windowID] = itemFrame
+            windowIDs.append(windowID)
+            frame = frame.union(itemFrame)
+        }
+
+        guard !windowIDs.isEmpty else {
+            return
+        }
+
+        var newImages = [MenuBarItemInfo: CGImage]()
+
+        if
+            let compositeImage = ScreenCapture.captureWindows(windowIDs, option: option),
+            CGFloat(compositeImage.width) == frame.width * backingScaleFactor
+        {
+            for windowID in windowIDs {
+                guard
+                    let itemInfo = itemInfos[windowID],
+                    let itemFrame = itemFrames[windowID]
+                else {
+                    continue
+                }
+                let cropRect = CGRect(
+                    x: (itemFrame.origin.x - frame.origin.x) * backingScaleFactor,
+                    y: (itemFrame.origin.y - frame.origin.y) * backingScaleFactor,
+                    width: itemFrame.width * backingScaleFactor,
+                    height: itemFrame.height * backingScaleFactor
+                )
+                if let itemImage = compositeImage.cropping(to: cropRect) {
+                    newImages[itemInfo] = itemImage
+                }
+            }
+        } else {
+            for windowID in windowIDs {
+                guard
+                    let itemInfo = itemInfos[windowID],
+                    let itemFrame = itemFrames[windowID]
+                else {
+                    continue
+                }
+                let cropRect = CGRect(
+                    x: 0,
+                    y: ((itemFrame.height * backingScaleFactor) / 2) - (defaultItemThickness / 2),
+                    width: itemFrame.width * backingScaleFactor,
+                    height: defaultItemThickness
+                )
+                if
+                    let itemImage = ScreenCapture.captureWindow(windowID, option: option),
+                    let croppedImage = itemImage.cropping(to: cropRect)
+                {
+                    newImages[itemInfo] = croppedImage
+                }
+            }
+        }
+
+        guard !newImages.isEmpty else {
+            return
+        }
+
+        await MainActor.run {
+            images.merge(newImages) { _, new in new }
+        }
     }
 }
 

@@ -89,6 +89,15 @@ final class EventTap {
     private var machPort: CFMachPort?
     private var source: CFRunLoopSource?
 
+    /// A Boolean value that indicates whether the tap has received an event
+    /// through its callback since it was most recently enabled with a timeout.
+    ///
+    /// This distinguishes "the tap never delivered an event" from "the tap was
+    /// disabled by its callback after delivering an event", so that timeouts
+    /// still fire when the tap could not be created at all (e.g. the
+    /// accessibility permission was revoked while the app was running).
+    private var didReceiveEvent = false
+
     /// The label associated with the event tap.
     let label: String
 
@@ -117,9 +126,14 @@ final class EventTap {
         types: [CGEventType],
         callback: @MainActor @escaping (_ proxy: Proxy, _ type: CGEventType, _ event: CGEvent) -> CGEvent?
     ) {
+        // The C callback runs on this run loop (see `performCallback`), which
+        // is only safe when the tap is created on the main thread. Assert so
+        // future callers creating taps off the main thread fail loudly.
+        assert(Thread.isMainThread)
         self.label = label
         self.callback = { @MainActor tap, pointer, type, event in
-            callback(Proxy(tap: tap, pointer: pointer), type, event).map(Unmanaged.passUnretained)
+            tap.didReceiveEvent = true
+            return callback(Proxy(tap: tap, pointer: pointer), type, event).map(Unmanaged.passUnretained)
         }
         guard let machPort = Self.createTapMachPort(
             location: location,
@@ -225,10 +239,15 @@ final class EventTap {
 
     /// Enables the event tap with the given timeout.
     func enable(timeout: Duration, onTimeout: @escaping () -> Void) {
+        didReceiveEvent = false
         enable()
         Task { [weak self] in
             try await Task.sleep(for: timeout)
-            if self?.isEnabled == true {
+            // Fire the timeout if the tap never delivered an event. Checking
+            // `isEnabled` alone is not sufficient: a tap whose mach port could
+            // not be created is permanently disabled, which would otherwise
+            // skip the timeout and hang the caller's continuation forever.
+            if self?.didReceiveEvent == false {
                 onTimeout()
             }
         }

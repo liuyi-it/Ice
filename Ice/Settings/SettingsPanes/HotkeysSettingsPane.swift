@@ -53,12 +53,13 @@ struct HotkeysSettingsPane: View {
 
     @ViewBuilder
     private func hotkeyRecorder(forSection name: MenuBarSection.Name) -> some View {
-        if appState.menuBarManager.section(withName: name)?.isEnabled == true {
-            if case .hidden = name {
-                hotkeyRecorder(forAction: .toggleHiddenSection)
-            } else if case .alwaysHidden = name {
-                hotkeyRecorder(forAction: .toggleAlwaysHiddenSection)
-            }
+        // Always show the recorder, even when the section is disabled: hiding
+        // it would leave the hotkey stored in defaults with no way to clear or
+        // edit it, and its registration state would silently diverge.
+        if case .hidden = name {
+            hotkeyRecorder(forAction: .toggleHiddenSection)
+        } else if case .alwaysHidden = name {
+            hotkeyRecorder(forAction: .toggleAlwaysHiddenSection)
         }
     }
 }

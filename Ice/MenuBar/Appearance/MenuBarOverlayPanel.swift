@@ -49,6 +49,14 @@ final class MenuBarOverlayPanel: NSPanel {
         func cancelTask(for flag: UpdateFlag) {
             tasks.removeValue(forKey: flag)?.cancel()
         }
+
+        /// Cancels all tasks.
+        func cancelAll() {
+            for task in tasks.values {
+                task.cancel()
+            }
+            tasks.removeAll()
+        }
     }
 
     /// A Boolean value that indicates whether the panel needs to be shown.
@@ -77,6 +85,16 @@ final class MenuBarOverlayPanel: NSPanel {
 
     /// The screen that owns the panel.
     let owningScreen: NSScreen
+
+    /// Cancels all update tasks and stops the panel's observers.
+    ///
+    /// Called by the appearance manager before the panel is replaced, so that
+    /// detached update tasks (which strongly capture their operation closures)
+    /// do not keep running after the panel has been removed.
+    func teardown() {
+        updateTaskContext.cancelAll()
+        cancellables.removeAll()
+    }
 
     /// Creates an overlay panel with the given app state and owning screen.
     init(appState: AppState, owningScreen: NSScreen) {
@@ -118,10 +136,19 @@ final class MenuBarOverlayPanel: NSPanel {
                 guard let self else {
                     return
                 }
-                updateTaskContext.setTask(for: .desktopWallpaper, timeout: .seconds(5)) {
+                // Capture `self` weakly: the detached task would otherwise
+                // strongly capture the panel, creating a retain cycle
+                // (panel → task context → task → panel) that leaks the panel
+                // and its infinite loop when the panel is replaced.
+                updateTaskContext.setTask(for: .desktopWallpaper, timeout: .seconds(5)) { [weak self] in
                     while true {
                         try Task.checkCancellation()
-                        self.insertUpdateFlag(.desktopWallpaper)
+                        guard let self else {
+                            return
+                        }
+                        await MainActor.run {
+                            self.insertUpdateFlag(.desktopWallpaper)
+                        }
                         try await Task.sleep(for: .seconds(1))
                     }
                 }
@@ -146,12 +173,19 @@ final class MenuBarOverlayPanel: NSPanel {
                 return
             }
             let displayID = owningScreen.displayID
-            updateTaskContext.setTask(for: .applicationMenuFrame, timeout: .seconds(10)) {
+            // Capture `self` weakly: the detached task would otherwise strongly
+            // capture the panel, creating a retain cycle (panel → task context
+            // → task → panel) that leaks the panel and its infinite loop when
+            // the panel is replaced.
+            updateTaskContext.setTask(for: .applicationMenuFrame, timeout: .seconds(10)) { [weak self] in
+                guard let self else {
+                    return
+                }
                 var hasDoneInitialUpdate = false
                 while true {
                     try Task.checkCancellation()
                     guard
-                        let latestFrame = appState.menuBarManager.getApplicationMenuFrame(for: displayID),
+                        let latestFrame = self.appState?.menuBarManager.getApplicationMenuFrame(for: displayID),
                         latestFrame != self.applicationMenuFrame
                     else {
                         if hasDoneInitialUpdate {
@@ -161,7 +195,9 @@ final class MenuBarOverlayPanel: NSPanel {
                         }
                         continue
                     }
-                    self.insertUpdateFlag(.applicationMenuFrame)
+                    await MainActor.run {
+                        self.insertUpdateFlag(.applicationMenuFrame)
+                    }
                     hasDoneInitialUpdate = true
                     // Give the main actor time to apply the update flag before checking again.
                     try await Task.sleep(for: .milliseconds(16))
@@ -221,6 +257,7 @@ final class MenuBarOverlayPanel: NSPanel {
             .store(in: &c)
 
         $updateFlags
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] flags in
                 guard let self, !flags.isEmpty else {
                     return
@@ -365,6 +402,15 @@ private final class MenuBarOverlayPanelContentView: NSView {
     @Published private var previewConfiguration: MenuBarAppearancePartialConfiguration?
 
     private var cancellables = Set<AnyCancellable>()
+
+    /// Cached menu bar items for split-shape drawing.
+    ///
+    /// `draw(_:)` can be invoked on every frame; querying the window server in
+    /// `pathForSplitShape` on each draw would stall the main thread. The list
+    /// is refreshed at most once per second.
+    private var cachedSplitItems: [MenuBarItem] = []
+
+    private var cachedSplitItemsDate = Date.distantPast
 
     /// The overlay panel that contains the content view.
     private var overlayPanel: MenuBarOverlayPanel? {
@@ -572,7 +618,16 @@ private final class MenuBarOverlayPanelContentView: NSView {
             return CGRect(x: rect.minX, y: rect.minY, width: maxX, height: rect.height)
         }()
         let trailingPathBounds: CGRect = {
-            let items = MenuBarItem.getMenuBarItems(on: screen.displayID, onScreenOnly: true, activeSpaceOnly: false)
+            // Throttle the window-server query: this can run inside `draw(_:)`,
+            // which may be invoked on every frame.
+            let items: [MenuBarItem]
+            if Date.now.timeIntervalSince(cachedSplitItemsDate) < 1 {
+                items = cachedSplitItems
+            } else {
+                items = MenuBarItem.getMenuBarItems(on: screen.displayID, onScreenOnly: true, activeSpaceOnly: false)
+                cachedSplitItems = items
+                cachedSplitItemsDate = .now
+            }
             guard !items.isEmpty else {
                 return .zero
             }

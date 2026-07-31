@@ -205,6 +205,12 @@ extension LayoutBarItemView: NSDraggingSource {
             oldContainerInfo = nil
         }
 
+        // Restore the container's ability to update its arranged views. Without
+        // this, cancelling a drag (Esc) or dropping outside the layout bar
+        // would leave `canSetArrangedViews` false forever, freezing the layout
+        // bar's sync with the item cache until a successful drop.
+        (superview as? LayoutBarContainer)?.canSetArrangedViews = true
+
         // since the session's `animatesToStartingPositionsOnCancelOrFail` property was
         // set to false when the session began (above), there is no delay between the user
         // releasing the dragging item and this method being called; thus, `isDraggingPlaceholder`

@@ -25,6 +25,16 @@ final class RunLoopLocalEventMonitor {
     ) {
         self.mode = mode
         self.handler = handler
+        // Events that this monitor has already drained from the app's event queue.
+        //
+        // The monitor reposts unconsumed events back to the queue (the tracking
+        // run loop mode does not consume them), so the same event would otherwise
+        // be drained — and its handler invoked — again on every run loop cycle
+        // until the tracking mode ends. The weak table lets the events be
+        // released once they are finally consumed, so it never grows without
+        // bound. Captured as a local so the observer closure does not capture
+        // `self` (which would create a retain cycle).
+        let handledEvents = NSHashTable<NSEvent>.weakObjects()
         self.observer = CFRunLoopObserverCreateWithHandler(
             kCFAllocatorDefault,
             CFRunLoopActivity.beforeSources.rawValue,
@@ -34,6 +44,10 @@ final class RunLoopLocalEventMonitor {
             var events = [NSEvent]()
 
             while let event = NSApp.nextEvent(matching: .any, until: nil, inMode: .default, dequeue: true) {
+                if handledEvents.contains(event) {
+                    continue
+                }
+                handledEvents.add(event)
                 events.append(event)
             }
 

@@ -227,12 +227,19 @@ final class ControlItem {
             .sink { [weak self] window, frame in
                 guard
                     let self,
-                    let screen = window.screen,
-                    screen.frame.intersects(frame)
+                    let screen = window.screen
                 else {
                     return
                 }
-                windowFrame = frame
+                if screen.frame.intersects(frame) {
+                    windowFrame = frame
+                } else {
+                    // The menu bar (and with it the control item) is off-screen
+                    // (e.g. the system is auto-hiding the menu bar). Clear the
+                    // stale frame so callers fall back to their default
+                    // positions instead of computing against an old location.
+                    windowFrame = nil
+                }
             }
             .store(in: &c)
 
@@ -329,7 +336,16 @@ final class ControlItem {
     /// Sets the initial configuration for the status item.
     private func configureStatusItem() {
         defer {
-            configureCancellables()
+            // Defer `configureCancellables()` to the next run loop turn.
+            //
+            // Its `CombineLatest($isVisible, $state)` subscription emits its
+            // initial value synchronously during subscription. At init time the
+            // sections array is still empty (this control item is being created
+            // while it is being assigned), so the initial value would be dropped
+            // by the `guard let section` and `statusItem.length` would stay 0,
+            // making the control item invisible and breaking section hiding.
+            // Running it asynchronously lets the sections array settle first.
+            Task { configureCancellables() }
             updateStatusItem(with: state)
         }
         guard let button = statusItem.button else {

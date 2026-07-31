@@ -27,7 +27,11 @@ enum StatusItemDefaults {
         guard newAutosaveName != oldAutosaveName else {
             return
         }
-        Self[key, newAutosaveName] = Self[key, oldAutosaveName]
+        guard let value = Self[key, oldAutosaveName] else {
+            // Nothing to migrate: leave any existing value at the new key intact.
+            return
+        }
+        Self[key, newAutosaveName] = value
         Self[key, oldAutosaveName] = nil
     }
 }

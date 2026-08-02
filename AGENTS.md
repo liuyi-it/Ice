@@ -8,7 +8,7 @@
 - 工程入口为 `Ice.xcodeproj`，唯一应用 target 和共享 scheme 均名为 `Ice`。
 - 应用入口是 `Ice/Main/IceApp.swift`；`AppState` 持有并协调主要 manager。
 - bundle identifier 为 `com.jordanbaird.Ice`，Swift 语言版本为 5。
-- 工程由 Xcode 16.4 保存并使用文件系统同步 group；推荐使用 Xcode 16.4 或更高版本。
+- 工程由 Xcode 26+ 保存并使用文件系统同步 group；推荐使用 Xcode 26 或更高版本（`NavigationSplitViewVisibility` 等 API 需要 macOS 26.5 SDK / Xcode 26+）。
 - 项目没有测试 target；验证以构建、SwiftLint 和针对性人工测试为主。
 - 应用未启用 App Sandbox，并使用辅助功能、事件监听、屏幕录制及部分私有系统桥接能力。修改相关代码时必须评估权限与系统版本影响。
 

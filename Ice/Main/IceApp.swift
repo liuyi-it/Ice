@@ -8,13 +8,11 @@ import SwiftUI
 @main
 struct IceApp: App {
     @NSApplicationDelegateAdaptor var appDelegate: AppDelegate
-    // `@StateObject` (rather than `@ObservedObject`) keeps the same AppState
-    // instance across App struct recreations. With `@ObservedObject`, a
-    // recreation would silently replace the state with a fresh, never-set-up
-    // instance, disabling all managers.
-    @StateObject var appState = AppState()
+    @StateObject private var appState: AppState
 
     init() {
+        let appState = AppState()
+        _appState = StateObject(wrappedValue: appState)
         NSSplitViewItem.swizzle()
         MigrationManager.migrateAll(appState: appState)
         appDelegate.assignAppState(appState)

@@ -9,6 +9,10 @@ struct SettingsView: View {
     @EnvironmentObject var navigationState: AppNavigationState
     @Environment(\.sidebarRowSize) var sidebarRowSize
 
+    // 强制 sidebar 始终展开：macOS 窗口状态恢复会把上次会话的折叠状态带回来，
+    // 配合 canCollapse=false 的 swizzle 实现"永远展开、不可折叠"。
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
     private var sidebarWidth: CGFloat {
         switch sidebarRowSize {
         case .small: 190
@@ -37,12 +41,16 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
         } detail: {
             detailView
         }
         .navigationTitle(navigationState.settingsNavigationIdentifier.localized)
+        .onAppear {
+            // 覆盖窗口状态恢复带回来的折叠状态。
+            columnVisibility = .all
+        }
     }
 
     @ViewBuilder

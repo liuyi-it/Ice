@@ -209,6 +209,7 @@ final class AppState: ObservableObject {
             return
         }
         settingsWindow = window
+        NSSplitViewItem.preventCollapse(in: window)
         menuBarManager.registerSettingsWindowObserver()
 
         // Track visibility directly on window assignment rather than through

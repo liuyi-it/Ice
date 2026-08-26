@@ -243,11 +243,13 @@ final class EventTap {
         enable()
         Task { [weak self] in
             try await Task.sleep(for: timeout)
-            // Fire the timeout if the tap never delivered an event. Checking
-            // `isEnabled` alone is not sufficient: a tap whose mach port could
-            // not be created is permanently disabled, which would otherwise
-            // skip the timeout and hang the caller's continuation forever.
-            if self?.didReceiveEvent == false {
+            guard let self else {
+                return
+            }
+            // A successful callback disables the tap. Keep timing out while
+            // the tap is still enabled (including after unrelated events), or
+            // if it could not be created and therefore delivered no events.
+            if isEnabled || !didReceiveEvent {
                 onTimeout()
             }
         }

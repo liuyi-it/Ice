@@ -229,6 +229,9 @@ extension EventManager {
         showOnClickTask = Task {
             // Short delay helps the toggle action feel more natural.
             try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled else {
+                return
+            }
 
             if modifiers == .control {
                 handleShowRightClickMenu()
@@ -287,6 +290,9 @@ extension EventManager {
 
             // Sleep for a bit to give the window under the mouse a chance to focus.
             try? await Task.sleep(for: .seconds(0.25))
+            guard !Task.isCancelled else {
+                return
+            }
 
             // If clicking caused a space change, don't bother with the window check.
             if Bridging.activeSpaceID != initialSpaceID {
@@ -400,6 +406,9 @@ extension EventManager {
         recordLayoutTask?.cancel()
         recordLayoutTask = Task {
             try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else {
+                return
+            }
             await appState.itemManager.cacheItemsIfNeeded(force: true)
             appState.layoutManager.recordCurrentLayout(reason: "menu bar command drag")
         }
@@ -450,6 +459,8 @@ extension EventManager {
             appState.settingsManager.generalSettingsManager.showOnHover,
             !appState.isShowOnHoverPrevented
         else {
+            hoverTask?.cancel()
+            hoverTask = nil
             return
         }
 
@@ -460,13 +471,25 @@ extension EventManager {
 
         let delay = appState.settingsManager.advancedSettingsManager.showOnHoverDelay
 
+        let shouldShow = hiddenSection.isHidden
+        let isMouseInTargetRegion = if shouldShow {
+            isMouseInsideEmptyMenuBarSpace
+        } else {
+            !isMouseInsideMenuBar && !isMouseInsideIceBar
+        }
+
+        guard isMouseInTargetRegion else {
+            hoverTask?.cancel()
+            hoverTask = nil
+            return
+        }
+
         // Only the first mouse-moved event for each hover state creates a task.
         // Cancelling on every mouse-moved event would perpetually restart the
         // delay while the mouse keeps moving, so the hover action would never
         // fire. The pending task re-validates the mouse position after the
         // delay, so ignoring same-state events is safe.
-        let shouldShow = hiddenSection.isHidden
-        if let hoverTask, isHoverTaskShowing == shouldShow {
+        if hoverTask != nil, isHoverTaskShowing == shouldShow {
             return
         }
 
@@ -487,9 +510,11 @@ extension EventManager {
                 }
                 // Make sure the mouse is still inside.
                 guard self.isMouseInsideEmptyMenuBarSpace else {
+                    self.hoverTask = nil
                     return
                 }
                 hiddenSection.show()
+                self.hoverTask = nil
             } else {
                 guard
                     !self.isMouseInsideMenuBar,
@@ -507,9 +532,11 @@ extension EventManager {
                     !self.isMouseInsideMenuBar,
                     !self.isMouseInsideIceBar
                 else {
+                    self.hoverTask = nil
                     return
                 }
                 hiddenSection.hide()
+                self.hoverTask = nil
             }
         }
     }

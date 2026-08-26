@@ -59,14 +59,14 @@ final class MenuBarLayoutManager {
         }
         do {
             configuration = try decoder.decode(MenuBarLayoutConfigurationV1.self, from: data)
-            moveNewItemMarkerToHiddenSectionIfNeeded()
+            moveNewItemMarkerToVisibleSectionIfNeeded()
         } catch {
             Logger.layoutManager.error("Error decoding menu bar layout configuration: \(error)")
         }
     }
 
-    /// Keeps newly discovered menu bar items in the Ice Bar by default.
-    private func moveNewItemMarkerToHiddenSectionIfNeeded() {
+    /// Keeps newly discovered menu bar items in the visible section by default.
+    private func moveNewItemMarkerToVisibleSectionIfNeeded() {
         guard var configuration else {
             return
         }
@@ -79,9 +79,9 @@ final class MenuBarLayoutManager {
             configuration.setItems(items, for: section)
         }
 
-        var hiddenItems = configuration.items(for: .hidden)
-        hiddenItems.append(.newItems)
-        configuration.setItems(hiddenItems, for: .hidden)
+        var visibleItems = configuration.items(for: .visible)
+        visibleItems.append(.newItems)
+        configuration.setItems(visibleItems, for: .visible)
 
         self.configuration = configuration
         save()
@@ -213,7 +213,7 @@ final class MenuBarLayoutManager {
     ///
     /// When a match is found, the orphan identity is replaced with the new identity
     /// in its original section, and the duplicate entry (inserted by
-    /// ``insertNewItem(_:into:)``) is removed from the hidden section.
+    /// ``insertNewItem(_:into:)``) is removed from the visible section.
     private func resolveOrphanIdentities(
         unconfiguredItems: [MenuBarItem],
         cache: MenuBarItemManager.ItemCache
@@ -247,34 +247,38 @@ final class MenuBarLayoutManager {
                 continue
             }
 
-            // Find an orphan identity whose imageHash matches the new item.
-            for section in MenuBarSection.Name.allCases {
-                var sectionItems = configuration.items(for: section)
-                guard let orphanIndex = sectionItems.firstIndex(where: { orphan in
-                    !orphan.isNewItemMarker && orphan.imageHash == newHash
-                }) else {
-                    continue
-                }
-
-                Logger.layoutManager.info(
-                    "Resolved orphan identity in \(section.logString): replacing \(sectionItems[orphanIndex].info) with \(item.logString)"
-                )
-
-                // Replace the orphan with the new identity in its original section.
-                sectionItems[orphanIndex] = newIdentity
-                configuration.setItems(sectionItems, for: section)
-
-                // Remove the duplicate entry from the hidden section that was
-                // inserted by insertNewItem.
-                var hiddenItems = configuration.items(for: .hidden)
-                if let duplicateIndex = hiddenItems.firstIndex(where: { $0.info == newIdentity.info }) {
-                    hiddenItems.remove(at: duplicateIndex)
-                    configuration.setItems(hiddenItems, for: .hidden)
-                }
-
-                didChange = true
-                break
+            let orphanMatch = MenuBarSection.Name.allCases.lazy.compactMap { section in
+                configuration.items(for: section).first(where: { identity in
+                    !identity.isNewItemMarker
+                        && identity.info != newIdentity.info
+                        && identity.imageHash == newHash
+                }).map { (section, $0) }
+            }.first
+            guard let (section, orphanIdentity) = orphanMatch else {
+                continue
             }
+
+            // Remove the entry inserted for the newly discovered item before
+            // replacing the orphan. If both are in the visible section, doing
+            // this after replacement could remove the restored original entry.
+            var visibleItems = configuration.items(for: .visible)
+            if let duplicateIndex = visibleItems.firstIndex(where: { $0.info == newIdentity.info }) {
+                visibleItems.remove(at: duplicateIndex)
+                configuration.setItems(visibleItems, for: .visible)
+            }
+
+            var sectionItems = configuration.items(for: section)
+            guard let orphanIndex = sectionItems.firstIndex(of: orphanIdentity) else {
+                continue
+            }
+
+            Logger.layoutManager.info(
+                "Resolved orphan identity in \(section.logString): replacing \(orphanIdentity.info) with \(item.logString)"
+            )
+
+            sectionItems[orphanIndex] = newIdentity
+            configuration.setItems(sectionItems, for: section)
+            didChange = true
         }
 
         if didChange {
@@ -286,13 +290,13 @@ final class MenuBarLayoutManager {
         }
     }
 
-    /// Inserts a new item at the new-item marker, defaulting to the hidden section.
+    /// Inserts a new item at the new-item marker, defaulting to the visible section.
     private func insertNewItem(_ item: MenuBarItem, into configuration: inout MenuBarLayoutConfigurationV1) {
         let identity = persistentIdentity(for: item)
-        var hiddenItems = configuration.items(for: .hidden)
-        let insertIndex = hiddenItems.firstIndex(where: \.isNewItemMarker) ?? hiddenItems.endIndex
-        hiddenItems.insert(identity, at: insertIndex)
-        configuration.setItems(hiddenItems, for: .hidden)
+        var visibleItems = configuration.items(for: .visible)
+        let insertIndex = visibleItems.firstIndex(where: \.isNewItemMarker) ?? visibleItems.endIndex
+        visibleItems.insert(identity, at: insertIndex)
+        configuration.setItems(visibleItems, for: .visible)
         Logger.layoutManager.info("Added new menu bar item to preferred layout: \(item.logString)")
     }
 
@@ -306,11 +310,11 @@ final class MenuBarLayoutManager {
 
     /// Schedules layout restoration for the given cache.
     private func scheduleRestore(from cache: MenuBarItemManager.ItemCache) {
-        guard canRestoreLayout else {
-            return
-        }
         Task {
             try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else {
+                return
+            }
             await restoreLayout(from: cache)
         }
     }
@@ -379,13 +383,13 @@ final class MenuBarLayoutManager {
         } catch {
             Logger.layoutManager.error("Error restoring menu bar layout: \(error)")
             let failures = (restoreFailureCounts[identity] ?? 0) + 1
+            restoreFailureCounts[identity] = failures
             if failures >= maxRestoreFailures {
-                restoreFailureCounts.removeValue(forKey: identity)
                 Logger.layoutManager.warning(
                     "Giving up restoring \(move.item.logString) after \(failures) consecutive failures"
                 )
             } else {
-                restoreFailureCounts[identity] = failures
+                scheduleRestore(from: cache)
             }
         }
     }
@@ -409,7 +413,7 @@ final class MenuBarLayoutManager {
             let desired = configuration.items(for: section).filter { !$0.isNewItemMarker }
             for identity in desired {
                 // Skip identities that have repeatedly failed to restore.
-                guard restoreFailureCounts[identity] == nil else {
+                guard !hasReachedRestoreFailureLimit(for: identity) else {
                     continue
                 }
                 guard let item = item(matching: identity, in: cache.managedItems) else {
@@ -447,7 +451,7 @@ final class MenuBarLayoutManager {
         cache: MenuBarItemManager.ItemCache
     ) -> (identity: MenuBarItemPersistentIdentity, item: MenuBarItem)? {
         let desiredItems = desired
-            .filter { restoreFailureCounts[$0] == nil }
+            .filter { !hasReachedRestoreFailureLimit(for: $0) }
             .compactMap { identity in
                 item(matching: identity, in: cache.managedItems(for: section)).map { (identity, $0) }
             }
@@ -553,6 +557,11 @@ final class MenuBarLayoutManager {
     /// Returns the persistent identity for a menu bar item.
     private func persistentIdentity(for item: MenuBarItem) -> MenuBarItemPersistentIdentity {
         MenuBarItemPersistentIdentity(info: item.info, imageHash: imageHash(for: item))
+    }
+
+    /// Returns whether layout restoration should stop retrying the given item.
+    private func hasReachedRestoreFailureLimit(for identity: MenuBarItemPersistentIdentity) -> Bool {
+        (restoreFailureCounts[identity] ?? 0) >= maxRestoreFailures
     }
 
     /// Returns a lightweight image hash for the given item.

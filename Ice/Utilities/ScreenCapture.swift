@@ -4,10 +4,31 @@
 //
 
 import CoreGraphics
+import Foundation
 import ScreenCaptureKit
 
 /// A namespace for screen capture operations.
 enum ScreenCapture {
+    /// Thread-safe storage for the cached permission result.
+    private final class PermissionCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var result: Bool?
+
+        func get() -> Bool? {
+            lock.lock()
+            defer { lock.unlock() }
+            return result
+        }
+
+        func set(_ result: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            self.result = result
+        }
+    }
+
+    private static let permissionCache = PermissionCache()
+
     /// Returns a Boolean value that indicates whether the app has been granted screen capture permissions.
     static func checkPermissions() -> Bool {
         var hasCheckedItem = false
@@ -36,18 +57,12 @@ enum ScreenCapture {
     /// Subsequent calls either return the cached value, or recompute the permissions state before caching
     /// and returning it.
     static func cachedCheckPermissions(reset: Bool = false) -> Bool {
-        enum Context {
-            static var lastCheckResult: Bool?
-        }
-
-        if !reset {
-            if let lastCheckResult = Context.lastCheckResult {
-                return lastCheckResult
-            }
+        if !reset, let cachedResult = permissionCache.get() {
+            return cachedResult
         }
 
         let realResult = checkPermissions()
-        Context.lastCheckResult = realResult
+        permissionCache.set(realResult)
         return realResult
     }
 

@@ -79,7 +79,7 @@ extension MenuBarLayoutConfigurationV1 {
             var items = cache.managedItems(for: section)
                 .filter { $0.info != .iceIcon }
                 .map(identityProvider)
-            if section == .hidden {
+            if section == .visible {
                 items.append(.newItems)
             }
             return Section(name: section, items: items)

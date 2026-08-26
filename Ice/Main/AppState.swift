@@ -267,7 +267,7 @@ final class AppState: ObservableObject {
     func activate(
         withPolicy policy: NSApplication.ActivationPolicy,
         throughDock: Bool = false,
-        completion: (() -> Void)? = nil
+        completion: (@MainActor @Sendable () -> Void)? = nil
     ) {
         // 在内部上下文中存储应用是否已经激活过的状态，保持隔离
         enum Context {

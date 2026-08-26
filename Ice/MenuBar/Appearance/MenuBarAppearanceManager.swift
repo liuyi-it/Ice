@@ -66,17 +66,22 @@ final class MenuBarAppearanceManager: ObservableObject {
                 guard let self else {
                     return
                 }
-                // Capture the old screen set before popping: the previous
-                // comparison ran after the set was already emptied, making it
-                // always true and needlessly recreating every panel.
                 let oldScreens = Set(overlayPanels.map { $0.owningScreen })
+                let currentScreens = Set(NSScreen.screens)
+                guard oldScreens != currentScreens else {
+                    // Screen geometry can change without changing the set of
+                    // NSScreen objects. Re-show the existing panels so they
+                    // recalculate their frames for the new parameters.
+                    for panel in overlayPanels {
+                        panel.needsShow = true
+                    }
+                    return
+                }
                 while let panel = overlayPanels.popFirst() {
                     panel.teardown()
                     panel.orderOut(self)
                 }
-                if oldScreens != Set(NSScreen.screens) {
-                    configureOverlayPanels(with: configuration)
-                }
+                configureOverlayPanels(with: configuration)
             }
             .store(in: &c)
 

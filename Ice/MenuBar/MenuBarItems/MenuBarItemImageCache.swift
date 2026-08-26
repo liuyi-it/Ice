@@ -6,6 +6,28 @@
 import Cocoa
 import Combine
 
+/// Sendable screen values needed by the background image capture work.
+private struct MenuBarImageCaptureContext: Sendable {
+    let displayID: CGDirectDisplayID
+    let displayBounds: CGRect
+    let backingScaleFactor: CGFloat
+    let defaultItemThickness: CGFloat
+
+    @MainActor
+    static func main() -> Self? {
+        guard let screen = NSScreen.main else {
+            return nil
+        }
+        let backingScaleFactor = screen.backingScaleFactor
+        return Self(
+            displayID: screen.displayID,
+            displayBounds: CGDisplayBounds(screen.displayID),
+            backingScaleFactor: backingScaleFactor,
+            defaultItemThickness: NSStatusBar.system.thickness * backingScaleFactor
+        )
+    }
+}
+
 /// Cache for menu bar item images.
 final class MenuBarItemImageCache: ObservableObject {
     /// The cached item images.
@@ -99,7 +121,10 @@ final class MenuBarItemImageCache: ObservableObject {
 
     /// Captures the images of the current menu bar items and returns a dictionary containing
     /// the images, keyed by the current menu bar item infos.
-    func createImages(for section: MenuBarSection.Name, screen: NSScreen) async -> [MenuBarItemInfo: CGImage] {
+    private func createImages(
+        for section: MenuBarSection.Name,
+        context: MenuBarImageCaptureContext
+    ) async -> [MenuBarItemInfo: CGImage] {
         guard let appState else {
             return [:]
         }
@@ -107,10 +132,10 @@ final class MenuBarItemImageCache: ObservableObject {
         let items = await appState.itemManager.itemCache[section]
 
         var images = [MenuBarItemInfo: CGImage]()
-        let backingScaleFactor = screen.backingScaleFactor
-        let displayBounds = CGDisplayBounds(screen.displayID)
+        let backingScaleFactor = context.backingScaleFactor
+        let displayBounds = context.displayBounds
         let option: CGWindowImageOption = [.boundsIgnoreFraming, .bestResolution]
-        let defaultItemThickness = NSStatusBar.system.thickness * backingScaleFactor
+        let defaultItemThickness = context.defaultItemThickness
 
         var itemInfos = [CGWindowID: MenuBarItemInfo]()
         var itemFrames = [CGWindowID: CGRect]()
@@ -193,7 +218,7 @@ final class MenuBarItemImageCache: ObservableObject {
     func updateCacheWithoutChecks(sections: [MenuBarSection.Name]) async {
         guard
             let appState,
-            let screen = NSScreen.main
+            let captureContext = await MenuBarImageCaptureContext.main()
         else {
             return
         }
@@ -204,7 +229,7 @@ final class MenuBarItemImageCache: ObservableObject {
             guard await !appState.itemManager.itemCache[section].isEmpty else {
                 continue
             }
-            let sectionImages = await createImages(for: section, screen: screen)
+            let sectionImages = await createImages(for: section, context: captureContext)
             guard !sectionImages.isEmpty else {
                 Logger.imageCache.warning("Update image cache failed for \(section.logString)")
                 continue
@@ -217,11 +242,12 @@ final class MenuBarItemImageCache: ObservableObject {
         // Update the published images and the non-atomic screen properties on
         // the main actor together: this method runs on a detached task while
         // SwiftUI views read `screen`/`menuBarHeight` on the main thread.
-        await MainActor.run { [newImages, validItemInfos, screen] in
+        await MainActor.run { [newImages, validItemInfos, captureContext] in
             images = images.filter { validItemInfos.contains($0.key) }
             images.merge(newImages) { (_, new) in new }
+            let screen = NSScreen.screens.first { $0.displayID == captureContext.displayID }
             self.screen = screen
-            self.menuBarHeight = screen.getMenuBarHeight()
+            self.menuBarHeight = screen?.getMenuBarHeight()
         }
     }
 
@@ -292,16 +318,16 @@ final class MenuBarItemImageCache: ObservableObject {
     /// `imageHash(for:)` can find them for orphan identity matching.
     func captureImagesForIdentityResolution(items: [MenuBarItem]) async {
         guard
-            let screen = NSScreen.main,
+            let captureContext = await MenuBarImageCaptureContext.main(),
             !items.isEmpty
         else {
             return
         }
 
-        let backingScaleFactor = screen.backingScaleFactor
-        let displayBounds = CGDisplayBounds(screen.displayID)
+        let backingScaleFactor = captureContext.backingScaleFactor
+        let displayBounds = captureContext.displayBounds
         let option: CGWindowImageOption = [.boundsIgnoreFraming, .bestResolution]
-        let defaultItemThickness = NSStatusBar.system.thickness * backingScaleFactor
+        let defaultItemThickness = captureContext.defaultItemThickness
 
         var itemInfos = [CGWindowID: MenuBarItemInfo]()
         var itemFrames = [CGWindowID: CGRect]()
@@ -376,7 +402,7 @@ final class MenuBarItemImageCache: ObservableObject {
             return
         }
 
-        await MainActor.run {
+        await MainActor.run { [newImages] in
             images.merge(newImages) { _, new in new }
         }
     }

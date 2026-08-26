@@ -6,11 +6,27 @@
 import Cocoa
 import Combine
 
+private final class PendingEventBuffer {
+    private var events = [NSEvent]()
+
+    func append(_ event: NSEvent) {
+        events.append(event)
+    }
+
+    func flush() {
+        for event in events {
+            NSApp.postEvent(event, atStart: false)
+        }
+        events.removeAll()
+    }
+}
+
 final class RunLoopLocalEventMonitor {
     private let runLoop = CFRunLoopGetCurrent()
     private let mode: RunLoop.Mode
     private let handler: (NSEvent) -> NSEvent?
     private let observer: CFRunLoopObserver
+    private let pendingEvents: PendingEventBuffer
 
     /// Creates an event monitor with the given event type mask and handler.
     ///
@@ -25,29 +41,22 @@ final class RunLoopLocalEventMonitor {
     ) {
         self.mode = mode
         self.handler = handler
-        // Events that this monitor has already drained from the app's event queue.
-        //
-        // The monitor reposts unconsumed events back to the queue (the tracking
-        // run loop mode does not consume them), so the same event would otherwise
-        // be drained — and its handler invoked — again on every run loop cycle
-        // until the tracking mode ends. The weak table lets the events be
-        // released once they are finally consumed, so it never grows without
-        // bound. Captured as a local so the observer closure does not capture
-        // `self` (which would create a retain cycle).
-        let handledEvents = NSHashTable<NSEvent>.weakObjects()
+        let pendingEvents = PendingEventBuffer()
+        self.pendingEvents = pendingEvents
         self.observer = CFRunLoopObserverCreateWithHandler(
             kCFAllocatorDefault,
-            CFRunLoopActivity.beforeSources.rawValue,
+            CFRunLoopActivity.beforeSources.rawValue | CFRunLoopActivity.exit.rawValue,
             true,
             0
-        ) { _, _ in
+        ) { _, activity in
+            if activity.contains(.exit) {
+                pendingEvents.flush()
+                return
+            }
+
             var events = [NSEvent]()
 
             while let event = NSApp.nextEvent(matching: .any, until: nil, inMode: .default, dequeue: true) {
-                if handledEvents.contains(event) {
-                    continue
-                }
-                handledEvents.add(event)
                 events.append(event)
             }
 
@@ -64,7 +73,10 @@ final class RunLoopLocalEventMonitor {
                     continue
                 }
 
-                NSApp.postEvent(handledEvent, atStart: false)
+                // Keep the event out of the default queue until the tracking
+                // run loop exits. Reposting it here would make this observer
+                // drain the same event again on its next cycle.
+                pendingEvents.append(handledEvent)
             }
         }
     }
@@ -87,6 +99,7 @@ final class RunLoopLocalEventMonitor {
             observer,
             CFRunLoopMode(mode.rawValue as CFString)
         )
+        pendingEvents.flush()
     }
 }
 

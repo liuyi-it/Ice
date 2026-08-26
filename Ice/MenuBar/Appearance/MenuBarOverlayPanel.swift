@@ -166,10 +166,7 @@ final class MenuBarOverlayPanel: NSPanel {
         )
         .removeDuplicates()
         .sink { [weak self] _ in
-            guard
-                let self,
-                let appState
-            else {
+            guard let self, appState != nil else {
                 return
             }
             let displayID = owningScreen.displayID

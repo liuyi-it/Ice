@@ -11,6 +11,7 @@
 - 工程由 Xcode 26+ 保存并使用文件系统同步 group；推荐使用 Xcode 26 或更高版本（`NavigationSplitViewVisibility` 等 API 需要 macOS 26.5 SDK / Xcode 26+）。
 - 项目没有测试 target；验证以构建、SwiftLint 和针对性人工测试为主。
 - 应用未启用 App Sandbox，并使用辅助功能、事件监听、屏幕录制及部分私有系统桥接能力。修改相关代码时必须评估权限与系统版本影响。
+- 本项目只支持 arm64 ，不需要支持 x86_64.
 
 ## 目录职责
 
@@ -53,6 +54,7 @@ Resources/                 # README 媒体与设计源文件
 - 菜单栏、窗口和屏幕坐标逻辑容易受多显示器、刘海、全屏 Space 和系统自动隐藏菜单栏影响；修改时覆盖这些场景。
 - `Bridging/` 和 `Swizzling/` 涉及私有 API 或运行时行为。保持修改最小化，并验证目标 macOS 版本上的行为。
 - 不要无故修改 `project.pbxproj` 或 `Package.resolved`。新增文件、target 或依赖时才更新工程配置，并检查 diff 中是否出现无关 Xcode 元数据变更。
+- 当前项目修改不用遵循最小修复，禁止采用打补丁方式修复，可以直接按最优方案修复；
 
 ## 代码风格
 

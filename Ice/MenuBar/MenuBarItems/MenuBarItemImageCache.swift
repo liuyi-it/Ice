@@ -237,14 +237,13 @@ final class MenuBarItemImageCache: ObservableObject {
             newImages.merge(sectionImages) { (_, new) in new }
         }
 
-        let validItemInfos = Set(await appState.itemManager.itemCache.allItems.map(\.info))
-
         // Update the published images and the non-atomic screen properties on
         // the main actor together: this method runs on a detached task while
         // SwiftUI views read `screen`/`menuBarHeight` on the main thread.
-        await MainActor.run { [newImages, validItemInfos, captureContext] in
+        await MainActor.run { [newImages, captureContext] in
+            let validItemInfos = Set(appState.itemManager.itemCache.allItems.map(\.info))
             images = images.filter { validItemInfos.contains($0.key) }
-            images.merge(newImages) { (_, new) in new }
+            images.merge(newImages.filter { validItemInfos.contains($0.key) }) { (_, new) in new }
             let screen = NSScreen.screens.first { $0.displayID == captureContext.displayID }
             self.screen = screen
             self.menuBarHeight = screen?.getMenuBarHeight()

@@ -27,6 +27,9 @@ final class MenuBarLayoutManager {
     /// A Boolean value that indicates whether the manager is restoring layout.
     private var isRestoringLayout = false
 
+    /// Coalesces pending restores before a move starts.
+    private var scheduledRestoreTask: Task<Void, Never>?
+
     /// A Boolean value that indicates whether orphan identity resolution is in progress.
     private var isResolvingOrphans = false
 
@@ -129,7 +132,7 @@ final class MenuBarLayoutManager {
         }
 
         addNewItemsIfNeeded(from: cache)
-        scheduleRestore(from: cache)
+        scheduleRestore()
     }
 
     /// Records the current item cache as the preferred layout.
@@ -308,14 +311,16 @@ final class MenuBarLayoutManager {
         configuration.allItems.contains { identityMatches($0, item: item) }
     }
 
-    /// Schedules layout restoration for the given cache.
-    private func scheduleRestore(from cache: MenuBarItemManager.ItemCache) {
-        Task {
+    /// Restores from the latest cache after a burst of item changes settles.
+    private func scheduleRestore() {
+        scheduledRestoreTask?.cancel()
+        scheduledRestoreTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(200))
-            guard !Task.isCancelled else {
+            guard !Task.isCancelled, let self, let appState else {
                 return
             }
-            await restoreLayout(from: cache)
+            scheduledRestoreTask = nil
+            await restoreLayout(from: appState.itemManager.itemCache)
         }
     }
 
@@ -366,13 +371,6 @@ final class MenuBarLayoutManager {
             isRestoringLayout = false
         }
 
-        // Re-check immediately before executing the move. The user may have
-        // started dragging while the restore task was pending, which would
-        // otherwise undo the user's drag with a stale cache.
-        guard canRestoreLayout else {
-            return
-        }
-
         let identity = persistentIdentity(for: move.item)
 
         do {
@@ -380,6 +378,8 @@ final class MenuBarLayoutManager {
             try await appState.itemManager.slowMove(item: move.item, to: move.destination, timeout: .seconds(2))
             restoreFailureCounts.removeValue(forKey: identity)
             await appState.itemManager.cacheItemsIfNeeded(force: true)
+        } catch is CancellationError {
+            return
         } catch {
             Logger.layoutManager.error("Error restoring menu bar layout: \(error)")
             let failures = (restoreFailureCounts[identity] ?? 0) + 1
@@ -389,7 +389,7 @@ final class MenuBarLayoutManager {
                     "Giving up restoring \(move.item.logString) after \(failures) consecutive failures"
                 )
             } else {
-                scheduleRestore(from: cache)
+                scheduleRestore()
             }
         }
     }

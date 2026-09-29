@@ -25,6 +25,7 @@ final class MenuBarOverlayPanel: NSPanel {
     }
 
     /// A context that manages panel update tasks.
+    @MainActor
     private final class UpdateTaskContext {
         private var tasks = [UpdateFlag: Task<Void, any Error>]()
 
@@ -36,9 +37,9 @@ final class MenuBarOverlayPanel: NSPanel {
         ///   - flag: The update flag to set the task for.
         ///   - timeout: The timeout of the task.
         ///   - operation: The operation for the task to perform.
-        func setTask(for flag: UpdateFlag, timeout: Duration, operation: @escaping () async throws -> Void) {
+        func setTask(for flag: UpdateFlag, timeout: Duration, operation: @MainActor @escaping () async throws -> Void) {
             cancelTask(for: flag)
-            tasks[flag] = Task.detached(timeout: timeout) {
+            tasks[flag] = Task(timeout: timeout) {
                 try await operation()
             }
         }
@@ -89,8 +90,7 @@ final class MenuBarOverlayPanel: NSPanel {
     /// Cancels all update tasks and stops the panel's observers.
     ///
     /// Called by the appearance manager before the panel is replaced, so that
-    /// detached update tasks (which strongly capture their operation closures)
-    /// do not keep running after the panel has been removed.
+    /// update tasks do not keep running after the panel has been removed.
     func teardown() {
         updateTaskContext.cancelAll()
         cancellables.removeAll()
@@ -136,19 +136,13 @@ final class MenuBarOverlayPanel: NSPanel {
                 guard let self else {
                     return
                 }
-                // Capture `self` weakly: the detached task would otherwise
-                // strongly capture the panel, creating a retain cycle
-                // (panel → task context → task → panel) that leaks the panel
-                // and its infinite loop when the panel is replaced.
                 updateTaskContext.setTask(for: .desktopWallpaper, timeout: .seconds(5)) { [weak self] in
                     while true {
                         try Task.checkCancellation()
                         guard let self else {
                             return
                         }
-                        await MainActor.run {
-                            self.insertUpdateFlag(.desktopWallpaper)
-                        }
+                        self.insertUpdateFlag(.desktopWallpaper)
                         try await Task.sleep(for: .seconds(1))
                     }
                 }
@@ -170,34 +164,24 @@ final class MenuBarOverlayPanel: NSPanel {
                 return
             }
             let displayID = owningScreen.displayID
-            // Capture `self` weakly: the detached task would otherwise strongly
-            // capture the panel, creating a retain cycle (panel → task context
-            // → task → panel) that leaks the panel and its infinite loop when
-            // the panel is replaced.
             updateTaskContext.setTask(for: .applicationMenuFrame, timeout: .seconds(10)) { [weak self] in
-                guard let self else {
-                    return
-                }
-                var hasDoneInitialUpdate = false
+                let clock = ContinuousClock()
+                let initialUpdateDeadline = clock.now.advanced(by: .milliseconds(250))
                 while true {
                     try Task.checkCancellation()
-                    guard
+                    guard let self else {
+                        return
+                    }
+                    if
                         let latestFrame = self.appState?.menuBarManager.getApplicationMenuFrame(for: displayID),
                         latestFrame != self.applicationMenuFrame
-                    else {
-                        if hasDoneInitialUpdate {
-                            try await Task.sleep(for: .seconds(1))
-                        } else {
-                            try await Task.sleep(for: .milliseconds(16))
-                        }
-                        continue
-                    }
-                    await MainActor.run {
+                    {
                         self.insertUpdateFlag(.applicationMenuFrame)
                     }
-                    hasDoneInitialUpdate = true
-                    // Give the main actor time to apply the update flag before checking again.
-                    try await Task.sleep(for: .milliseconds(16))
+                    // Limit fast polling even when two apps have the same menu frame
+                    // or accessibility cannot return one yet.
+                    let interval: Duration = clock.now < initialUpdateDeadline ? .milliseconds(16) : .seconds(1)
+                    try await Task.sleep(for: interval)
                 }
             }
             Task {

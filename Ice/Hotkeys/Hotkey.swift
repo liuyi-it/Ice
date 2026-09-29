@@ -70,12 +70,12 @@ extension Hotkey {
             let id = appState.hotkeyRegistry.register(
                 hotkey: hotkey,
                 eventKind: eventKind
-            ) { [weak appState] in
+            ) { [weak appState, action = hotkey.action] in
                 guard let appState else {
                     return
                 }
                 Task {
-                    await hotkey.action.perform(appState: appState)
+                    await action.perform(appState: appState)
                 }
             }
             guard let id else {

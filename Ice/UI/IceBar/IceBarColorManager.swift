@@ -43,10 +43,10 @@ final class IceBarColorManager: ObservableObject {
                 iceBarPanel.publisher(for: \.isVisible)
             )
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] frame, isVisible in
+            .sink { [weak self, weak iceBarPanel] frame, isVisible in
                 guard
                     let self,
-                    let screen = iceBarPanel.screen,
+                    let screen = iceBarPanel?.screen,
                     isVisible,
                     screen == .main
                 else {

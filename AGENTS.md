@@ -9,7 +9,7 @@
 - 应用入口是 `Ice/Main/IceApp.swift`；`AppState` 持有并协调主要 manager。
 - bundle identifier 为 `com.jordanbaird.Ice`，Swift 语言版本为 5。
 - 工程由 Xcode 26+ 保存并使用文件系统同步 group；推荐使用 Xcode 26 或更高版本（`NavigationSplitViewVisibility` 等 API 需要 macOS 26.5 SDK / Xcode 26+）。
-- 项目没有测试 target；验证以构建、SwiftLint 和针对性人工测试为主。
+- 项目没有 Xcode 测试 target；`Tests/run-regressions.sh` 直接编译相关生产源码并运行独立回归检查，结合构建、SwiftLint 和针对性人工验证。
 - 应用未启用 App Sandbox，并使用辅助功能、事件监听、屏幕录制及部分私有系统桥接能力。修改相关代码时必须评估权限与系统版本影响。
 - 本项目只支持 arm64 ，不需要支持 x86_64.
 
@@ -33,6 +33,7 @@ Ice/
 ├── Assets.xcassets/      # 图片、图标和颜色资源
 └── Ice.entitlements      # 应用权限配置
 Resources/                 # README 媒体与设计源文件
+Tests/                     # 事件和异步任务回归检查及人工验证清单
 ```
 
 其他关键文件：
@@ -48,6 +49,8 @@ Resources/                 # README 媒体与设计源文件
 
 - `AppState` 是应用级依赖容器。新增跨功能 manager 时，遵循现有 lazy manager、弱引用 `appState` 和 `performSetup()` 生命周期模式。
 - UI 与影响 UI 的状态通常运行在 `@MainActor`。跨 actor 或 detached task 修改状态前，先确认隔离边界。
+- 鼠标按键和空闲时间通过 `MouseState` 按需读取系统状态；不得在 RunLoop observer 中取出、重新投递 AppKit 事件来维护这些状态。
+- 有超时的等待优先使用结构化的 `Task.withTimeout`，确保父任务取消能够传递到等待操作。
 - 使用 Combine 订阅时，将 cancellable 保存在所属对象中，并优先使用 `[weak self]` 避免循环引用。
 - 用户设置通常通过现有 settings manager、`Defaults` 或 `StatusItemDefaults` 管理。新增或调整持久化字段时，检查 `MigrationManager` 是否需要迁移。
 - 日志使用 `Ice/Utilities/Logging.swift` 中的 `Logger`，并沿用文件内私有 category 扩展；不要新增散落的 `print`。
@@ -101,7 +104,7 @@ xcodebuild \
   -project Ice.xcodeproj \
   -scheme Ice \
   -configuration Debug \
-  -destination 'platform=macOS' \
+  -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath build/DerivedData \
   CODE_SIGNING_ALLOWED=NO \
   build
@@ -123,13 +126,19 @@ xcodebuild \
   -project Ice.xcodeproj \
   -scheme Ice \
   -configuration Debug \
-  -destination 'platform=macOS' \
+  -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath build/DerivedData \
   CODE_SIGNING_ALLOWED=NO \
   analyze
 ```
 
-仓库当前没有测试套件，不要声称“测试通过”。应明确报告执行过的构建、lint、静态分析和人工验证。
+运行独立回归检查：
+
+```sh
+Tests/run-regressions.sh
+```
+
+回归检查需要 macOS 和当前登录的图形会话；只向检查进程自己的 AppKit 队列投递事件，不向系统或正在运行的 Ice 注入输入。测试说明和人工场景见 `Tests/README.md`。报告应区分回归脚本、构建、lint、静态分析和真实应用人工验证。
 
 ## Release 打包、签名、替换与清理
 
@@ -153,7 +162,7 @@ xcodebuild \
   -project Ice.xcodeproj \
   -scheme Ice \
   -configuration Release \
-  -destination 'platform=macOS' \
+  -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath build/ReleaseDerivedData \
   ENABLE_HARDENED_RUNTIME=YES \
   CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
@@ -177,7 +186,7 @@ build/ReleaseDerivedData/Build/Products/Release/Ice.app
 - `codesign -dv --verbose=4 <Ice.app>` 显示正确的 `Authority`、`TeamIdentifier`，并包含 `flags=0x10000(runtime)`。
 - `codesign -d --entitlements :- <Ice.app>` 中不存在 `com.apple.security.get-task-allow`，尤其不能为 `true`。
 - `Contents/MacOS` 中只有 Release 主可执行文件，不存在 `Ice.debug.dylib` 或 `__preview.dylib`。
-- 使用 `file Contents/MacOS/Ice` 核对目标架构；默认 Release 部署应保留工程生成的 Universal（arm64 + x86_64）产物，除非用户明确要求单一架构。
+- 使用 `file Contents/MacOS/Ice` 核对目标架构；本项目的 Debug 和 Release 均配置为 arm64，部署产物也应为 arm64。
 - 读取 `CFBundleShortVersionString` 和 `CFBundleVersion`，向用户准确报告版本；代码更新但未调整版本号时，不得声称版本号已升级。
 
 任何一项不符合都不得替换当前应用。
@@ -205,7 +214,7 @@ open /Applications/Ice.app
 
 根据改动范围选择验证，并在完成时报告结果和环境阻塞。人工场景仅在环境允许时执行；无法执行时明确列出未验证场景和原因：
 
-- 所有 Swift 修改：尽可能运行 `swiftlint --strict` 和 Debug 构建。
+- 所有 Swift 修改：尽可能运行 `swiftlint --strict`、`Tests/run-regressions.sh` 和 Debug 构建。
 - 菜单栏显示/隐藏、分区和自动隐藏：验证 visible、hidden、always-hidden 分区及多显示器行为。
 - UI 或设置：验证设置窗口、持久化、重启后恢复以及浅色/深色外观。
 - 权限、事件 tap、屏幕捕获：分别验证权限未授予、授予后和权限被撤销的行为。

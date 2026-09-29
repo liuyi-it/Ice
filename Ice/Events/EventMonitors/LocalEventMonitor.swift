@@ -72,23 +72,42 @@ extension LocalEventMonitor {
 
 extension LocalEventMonitor.LocalEventPublisher {
     private final class LocalEventSubscription<S: Subscriber<Output, Failure>>: Subscription {
-        var subscriber: S?
-        let monitor: LocalEventMonitor
+        private var subscriber: S?
+        private var monitor: LocalEventMonitor?
+        private var demand = Subscribers.Demand.none
 
         init(mask: NSEvent.EventTypeMask, subscriber: S) {
             self.subscriber = subscriber
-            self.monitor = LocalEventMonitor(mask: mask) { event in
-                _ = subscriber.receive(event)
+            self.monitor = LocalEventMonitor(mask: mask) { [weak self] event in
+                self?.receive(event)
                 return event
             }
-            monitor.start()
         }
 
-        func request(_ demand: Subscribers.Demand) { }
+        private func receive(_ event: NSEvent) {
+            guard let subscriber, demand > .none else {
+                return
+            }
+            demand -= 1
+            let additionalDemand = subscriber.receive(event)
+            if self.subscriber != nil {
+                demand += additionalDemand
+            }
+        }
+
+        func request(_ demand: Subscribers.Demand) {
+            guard subscriber != nil, demand > .none else {
+                return
+            }
+            self.demand += demand
+            monitor?.start()
+        }
 
         func cancel() {
-            monitor.stop()
+            monitor?.stop()
+            monitor = nil
             subscriber = nil
+            demand = .none
         }
     }
 }

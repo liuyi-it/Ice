@@ -24,7 +24,7 @@ extension Task where Failure == any Error {
         operation: @escaping @Sendable () async throws -> Success
     ) {
         self.init(priority: priority) {
-            try await Task.run(operation: operation, withTimeout: timeout, tolerance: tolerance, clock: clock)
+            try await Task.withTimeout(timeout, tolerance: tolerance, clock: clock, operation: operation)
         }
     }
 
@@ -47,17 +47,20 @@ extension Task where Failure == any Error {
         operation: @escaping @Sendable () async throws -> Success
     ) -> Task {
         detached(priority: priority) {
-            try await run(operation: operation, withTimeout: timeout, tolerance: tolerance, clock: clock)
+            try await withTimeout(timeout, tolerance: tolerance, clock: clock, operation: operation)
         }
     }
 
-    private static func run<C: Clock>(
-        operation: @escaping @Sendable () async throws -> Success,
-        withTimeout timeout: C.Instant.Duration,
-        tolerance: C.Instant.Duration?,
-        clock: C
+    /// Runs within the caller's task so cancellation reaches the operation and timer.
+    static func withTimeout<C: Clock>(
+        _ timeout: C.Instant.Duration,
+        tolerance: C.Instant.Duration? = nil,
+        clock: C = ContinuousClock(),
+        operation: @escaping @Sendable () async throws -> Success
     ) async throws -> Success {
         try await withThrowingTaskGroup(of: Success.self) { group in
+            defer { group.cancelAll() }
+            try _Concurrency.Task.checkCancellation()
             group.addTask(operation: operation)
             group.addTask {
                 try await _Concurrency.Task.sleep(for: timeout, tolerance: tolerance, clock: clock)
@@ -66,7 +69,6 @@ extension Task where Failure == any Error {
             guard let success = try await group.next() else {
                 throw _Concurrency.CancellationError()
             }
-            group.cancelAll()
             return success
         }
     }

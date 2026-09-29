@@ -33,12 +33,6 @@ final class AppState: ObservableObject {
     /// 应用设置管理器
     private(set) lazy var settingsManager = SettingsManager(appState: self)
 
-    /// 应用更新管理器
-    private(set) lazy var updatesManager = UpdatesManager(appState: self)
-
-    /// 用户通知管理器
-    private(set) lazy var userNotificationManager = UserNotificationManager(appState: self)
-
     /// 菜单栏项目图标全局缓存
     private(set) lazy var imageCache = MenuBarItemImageCache(appState: self)
 
@@ -165,11 +159,6 @@ final class AppState: ObservableObject {
                 self?.objectWillChange.send()
             }
             .store(in: &c)
-        updatesManager.objectWillChange
-            .sink { [weak self] in
-                self?.objectWillChange.send()
-            }
-            .store(in: &c)
 
         cancellables = c
     }
@@ -189,8 +178,6 @@ final class AppState: ObservableObject {
         itemManager.performSetup()
         layoutManager.performSetup()
         imageCache.performSetup()
-        updatesManager.performSetup()
-        userNotificationManager.performSetup()
     }
 
     /// 为应用状态设置代理

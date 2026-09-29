@@ -23,6 +23,8 @@ Ice is a powerful menu bar management tool. While its primary function is hiding
 
 ## Install
 
+This fork does not include automatic updates or an in-app update checker. To update a shared build, quit Ice and replace `Ice.app` in your `Applications` folder with the newer build.
+
 ### Manual Installation
 
 Download the "Ice.zip" file from the [latest release](https://github.com/jordanbaird/Ice/releases/latest) and move the unzipped app into your `Applications` folder.
@@ -78,7 +80,6 @@ brew install --cask jordanbaird-ice
 ### Other
 
 - [x] Launch at login
-- [x] Automatic updates
 - [ ] Menu bar widgets
 
 ## Why does Ice only support macOS 14 and later?

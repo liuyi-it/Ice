@@ -519,16 +519,6 @@ final class ControlItem {
 
         menu.addItem(.separator())
 
-        let checkForUpdatesItem = NSMenuItem(
-            title: "检查更新…",
-            action: #selector(checkForUpdates),
-            keyEquivalent: ""
-        )
-        checkForUpdatesItem.target = self
-        menu.addItem(checkForUpdatesItem)
-
-        menu.addItem(.separator())
-
         let quitItem = NSMenuItem(
             title: "退出 Ice",
             action: #selector(NSApp.terminate),
@@ -556,14 +546,6 @@ final class ControlItem {
         Task {
             await appState.menuBarManager.searchPanel.show(on: screen)
         }
-    }
-
-    /// Opens the settings window and checks for app updates.
-    @objc private func checkForUpdates() {
-        guard let appState else {
-            return
-        }
-        appState.updatesManager.checkForUpdates()
     }
 
     /// Adds the control item to the menu bar.

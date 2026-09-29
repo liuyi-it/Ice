@@ -6,12 +6,7 @@
 import SwiftUI
 
 struct AboutSettingsPane: View {
-    @EnvironmentObject var appState: AppState
     @Environment(\.openURL) private var openURL
-
-    private var updatesManager: UpdatesManager {
-        appState.updatesManager
-    }
 
     private var acknowledgementsURL: URL? {
         Bundle.main.url(forResource: "Acknowledgements", withExtension: "pdf")
@@ -35,14 +30,6 @@ struct AboutSettingsPane: View {
         return url
     }
 
-    private var lastUpdateCheckString: String {
-        if let date = updatesManager.lastUpdateCheckDate {
-            date.formatted(date: .abbreviated, time: .standard)
-        } else {
-            "从未检查"
-        }
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             mainForm
@@ -56,12 +43,6 @@ struct AboutSettingsPane: View {
     private var mainForm: some View {
         IceForm(padding: EdgeInsets(top: 5, leading: 30, bottom: 30, trailing: 30), spacing: 0) {
             appIconAndCopyrightSection
-                .layoutPriority(1)
-
-            Spacer(minLength: 0)
-                .frame(maxHeight: 20)
-
-            updatesSection
                 .layoutPriority(1)
         }
         .scrollDisabled(true)
@@ -94,46 +75,6 @@ struct AboutSettingsPane: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private var updatesSection: some View {
-        IceSection(options: .hasDividers) {
-            automaticallyCheckForUpdates
-            automaticallyDownloadUpdates
-            if updatesManager.canCheckForUpdates {
-                checkForUpdates
-            }
-        }
-        .frame(maxWidth: 600)
-    }
-
-    @ViewBuilder
-    private var automaticallyCheckForUpdates: some View {
-        Toggle(
-            "自动检查更新",
-            isOn: updatesManager.bindings.automaticallyChecksForUpdates
-        )
-    }
-
-    @ViewBuilder
-    private var automaticallyDownloadUpdates: some View {
-        Toggle(
-            "自动下载更新",
-            isOn: updatesManager.bindings.automaticallyDownloadsUpdates
-        )
-    }
-
-    @ViewBuilder
-    private var checkForUpdates: some View {
-        HStack {
-            Button("检查更新") {
-                updatesManager.checkForUpdates()
-            }
-            Spacer()
-            Text("上次检查：\(lastUpdateCheckString)")
-                .font(.caption)
         }
     }
 

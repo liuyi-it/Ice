@@ -24,8 +24,6 @@ Ice/
 ├── UI/                   # 通用 SwiftUI/AppKit 视图与组件
 ├── Events/               # 全局/局部事件监听及事件 tap
 ├── Permissions/          # 辅助功能、屏幕录制等权限检查与引导
-├── Updates/              # Sparkle 自动更新
-├── UserNotifications/    # 用户通知
 ├── Utilities/            # 日志、持久化、屏幕捕获和通用扩展
 ├── Bridging/             # 系统 API 与私有 API 桥接
 ├── Swizzling/            # AppKit 运行时方法交换
@@ -41,7 +39,7 @@ Tests/                     # 事件和异步任务回归检查及人工验证清
 - `.swiftlint.yml`：SwiftLint 规则。
 - `.github/workflows/lint.yml`：CI lint 工作流。
 - `Ice.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`：锁定 SwiftPM 依赖版本。
-- `Ice/Info.plist`：应用信息及 Sparkle feed 配置。
+- `Ice/Info.plist`：应用信息补充配置。
 - `README.md`：产品功能与路线图。
 - `FREQUENT_ISSUES.md`：常见用户问题。
 
@@ -85,7 +83,8 @@ SwiftPM 依赖由 Xcode 工程和 `Package.resolved` 管理：
 - `CompactSlider`：滑块 UI。
 - `Ifrit`：图像处理。
 - `LaunchAtLogin-Modern`：登录时启动。
-- `Sparkle`：自动更新。
+
+本分支不包含自动更新或应用内更新检查；新版本通过手动替换 `Ice.app` 安装。
 
 调整依赖前先确认现有依赖不能满足需求。不要手工编辑 `Package.resolved` 中的 revision。
 
@@ -219,7 +218,7 @@ open /Applications/Ice.app
 - UI 或设置：验证设置窗口、持久化、重启后恢复以及浅色/深色外观。
 - 权限、事件 tap、屏幕捕获：分别验证权限未授予、授予后和权限被撤销的行为。
 - 快捷键：验证注册、冲突、设置更新和应用重启后的恢复。
-- 更新流程：避免触发真实发布；使用 Sparkle 的安全测试方式验证。
+- 打包：运行 `python3 Tests/check-manual-updates.py <Ice.app>`，确认没有更新源、更新框架或更新助手。
 - 修改 `project.pbxproj`、entitlements 或依赖：同时检查 Release 配置和签名相关 diff。
 
 若命令因沙箱、签名、钥匙串、权限、SwiftPM 网络访问或本机 Xcode 环境失败，应将环境问题与代码问题分开说明。

@@ -105,7 +105,7 @@ struct AdvancedSettingsPane: View {
             )
         } label: {
             Text("悬停显示延迟")
-                .frame(minHeight: .compactSliderMinHeight)
+                .frame(minHeight: 24)
                 .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
                 .onFrameChange { frame in
                     maxSliderLabelWidth = max(maxSliderLabelWidth, frame.width)
@@ -125,7 +125,7 @@ struct AdvancedSettingsPane: View {
             )
         } label: {
             Text("临时显示项目延迟")
-                .frame(minHeight: .compactSliderMinHeight)
+                .frame(minHeight: 24)
                 .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
                 .onFrameChange { frame in
                     maxSliderLabelWidth = max(maxSliderLabelWidth, frame.width)

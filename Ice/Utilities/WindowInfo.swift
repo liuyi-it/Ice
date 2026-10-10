@@ -59,7 +59,9 @@ struct WindowInfo {
     /// A Boolean value that indicates whether the window represents a
     /// menu bar item.
     var isMenuBarItem: Bool {
-        layer == kCGStatusWindowLevel
+        // WindowServer creates transient status-item clones during app/menu
+        // transitions. They share the status level but cannot receive events.
+        layer == kCGStatusWindowLevel && !isWindowServerWindow
     }
 
     /// A Boolean value that indicates whether the window belongs to the

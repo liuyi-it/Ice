@@ -33,12 +33,15 @@ final class MenuBarLayoutManager {
     /// A Boolean value that indicates whether orphan identity resolution is in progress.
     private var isResolvingOrphans = false
 
-    /// Number of consecutive failed restore moves per persistent identity.
+    /// Newly discovered infos awaiting an image before being classified.
+    private var pendingIdentityInfos = Set<MenuBarItemInfo>()
+
+    /// Number of consecutive failed restore moves per current item info.
     ///
     /// Some items cannot be moved by the system (e.g. items whose owning app is
     /// not responding), which would otherwise make the restore loop retry the
     /// same move forever, repeatedly hiding and warping the mouse cursor.
-    private var restoreFailureCounts = [MenuBarItemPersistentIdentity: Int]()
+    private var restoreFailureCounts = [MenuBarItemInfo: Int]()
 
     /// The maximum number of consecutive restore failures before an item is
     /// skipped until the user manually drags it (which resets the counts).
@@ -106,6 +109,16 @@ final class MenuBarLayoutManager {
             }
             .store(in: &c)
 
+        appState.imageCache.$images
+            .debounce(for: 0.5, scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, let appState = self.appState else {
+                    return
+                }
+                self.updateIdentityConfiguration(from: appState.itemManager.itemCache)
+            }
+            .store(in: &c)
+
         cancellables = c
     }
 
@@ -128,7 +141,6 @@ final class MenuBarLayoutManager {
         if configuration == nil {
             configuration = .defaultConfiguration(from: cache, identityProvider: persistentIdentity(for:))
             save()
-            return
         }
 
         addNewItemsIfNeeded(from: cache)
@@ -147,11 +159,13 @@ final class MenuBarLayoutManager {
         Logger.layoutManager.info("Recording menu bar layout (\(reason))")
         configuration = .defaultConfiguration(
             from: appState.itemManager.itemCache,
-            identityProvider: persistentIdentity(for:)
+            identityProvider: persistentIdentity(for:),
+            retainingMissingItemsFrom: configuration
         )
         save()
         // A manual drag resets the restore failure counters.
         restoreFailureCounts.removeAll()
+        pendingIdentityInfos.removeAll()
     }
 
     /// Adds newly discovered items to the persisted layout.
@@ -161,12 +175,11 @@ final class MenuBarLayoutManager {
         }
 
         var didChange = false
-        var unconfiguredItems = [MenuBarItem]()
         for item in cache.managedItems where
             item.info != .iceIcon
                 && !configurationContains(item, configuration: configuration)
         {
-            unconfiguredItems.append(item)
+            pendingIdentityInfos.insert(item.info)
             insertNewItem(item, into: &configuration)
             didChange = true
         }
@@ -176,39 +189,36 @@ final class MenuBarLayoutManager {
             save()
         }
 
-        // When items appear as "new" but the configuration has orphan identities
-        // (stale entries that no longer match any current item), the items likely
-        // restarted with a new windowID on macOS 26. Schedule async image-based
-        // matching to resolve the orphan identities and keep items in their original
-        // sections.
-        guard !unconfiguredItems.isEmpty, hasOrphanIdentities(cache: cache), !isResolvingOrphans else {
+        updateIdentityConfiguration(from: cache)
+
+        // Capture fingerprints while the original windows still exist, even
+        // when no layout or Ice Bar UI is open. Later image publications also
+        // retry identities whose first capture was unavailable.
+        let itemsNeedingImages = cache.managedItems.filter { imageHash(for: $0) == nil }
+        guard !itemsNeedingImages.isEmpty, ScreenCapture.cachedCheckPermissions(), !isResolvingOrphans else {
             return
         }
         isResolvingOrphans = true
         Task { [weak self] in
             defer { self?.isResolvingOrphans = false }
-            await self?.resolveOrphanIdentities(
-                unconfiguredItems: unconfiguredItems,
-                cache: cache
-            )
+            await self?.resolveOrphanIdentities(unconfiguredItems: itemsNeedingImages)
         }
     }
 
-    /// Returns whether the configuration contains orphan identities that do not
-    /// match any item in the current cache.
-    private func hasOrphanIdentities(cache: MenuBarItemManager.ItemCache) -> Bool {
-        guard let configuration else {
-            return false
+    /// Reconciles identities against the latest cache and schedules any restored layout.
+    private func updateIdentityConfiguration(from cache: MenuBarItemManager.ItemCache) {
+        guard var configuration else {
+            return
         }
-        for identity in configuration.allItems where !identity.isNewItemMarker {
-            let isMatched = cache.managedItems.contains { item in
-                identityMatches(identity, item: item)
-            }
-            if !isMatched {
-                return true
-            }
+        let identities = cache.managedItems.map(persistentIdentity(for:))
+        if configuration.reconcileIdentities(identities, resolving: pendingIdentityInfos) {
+            self.configuration = configuration
+            save()
+            // Identity changes do not change ItemCache. Its removeDuplicates()
+            // observer therefore cannot trigger restoration for us.
+            scheduleRestore()
         }
-        return false
+        pendingIdentityInfos.subtract(identities.filter { $0.imageHash != nil }.map(\.info))
     }
 
     /// Resolves orphan identities by capturing images for unconfigured items and
@@ -218,79 +228,14 @@ final class MenuBarLayoutManager {
     /// in its original section, and the duplicate entry (inserted by
     /// ``insertNewItem(_:into:)``) is removed from the visible section.
     private func resolveOrphanIdentities(
-        unconfiguredItems: [MenuBarItem],
-        cache: MenuBarItemManager.ItemCache
+        unconfiguredItems: [MenuBarItem]
     ) async {
-        guard
-            let appState,
-            var configuration,
-            ScreenCapture.cachedCheckPermissions()
-        else {
+        guard let appState, ScreenCapture.cachedCheckPermissions() else {
             return
         }
-
-        // Capture images for the unconfigured items so that imageHash(for:)
-        // can compute hashes for identity matching.
-        await appState.imageCache.captureImagesForIdentityResolution(
-            items: unconfiguredItems
-        )
-
-        // Re-read configuration as it may have been updated during the await.
-        guard let currentConfiguration = self.configuration else {
-            return
-        }
-        configuration = currentConfiguration
-
-        var didChange = false
-
-        for item in unconfiguredItems {
-            let newIdentity = persistentIdentity(for: item)
-            let newHash = imageHash(for: item)
-            guard let newHash else {
-                continue
-            }
-
-            let orphanMatch = MenuBarSection.Name.allCases.lazy.compactMap { section in
-                configuration.items(for: section).first(where: { identity in
-                    !identity.isNewItemMarker
-                        && identity.info != newIdentity.info
-                        && identity.imageHash == newHash
-                }).map { (section, $0) }
-            }.first
-            guard let (section, orphanIdentity) = orphanMatch else {
-                continue
-            }
-
-            // Remove the entry inserted for the newly discovered item before
-            // replacing the orphan. If both are in the visible section, doing
-            // this after replacement could remove the restored original entry.
-            var visibleItems = configuration.items(for: .visible)
-            if let duplicateIndex = visibleItems.firstIndex(where: { $0.info == newIdentity.info }) {
-                visibleItems.remove(at: duplicateIndex)
-                configuration.setItems(visibleItems, for: .visible)
-            }
-
-            var sectionItems = configuration.items(for: section)
-            guard let orphanIndex = sectionItems.firstIndex(of: orphanIdentity) else {
-                continue
-            }
-
-            Logger.layoutManager.info(
-                "Resolved orphan identity in \(section.logString): replacing \(orphanIdentity.info) with \(item.logString)"
-            )
-
-            sectionItems[orphanIndex] = newIdentity
-            configuration.setItems(sectionItems, for: section)
-            didChange = true
-        }
-
-        if didChange {
-            self.configuration = configuration
-            save()
-            // Re-cache and re-trigger restore so the layout manager can move
-            // items to their correct positions.
-            await appState.itemManager.cacheItemsIfNeeded(force: true)
-        }
+        await appState.imageCache.captureImagesForIdentityResolution(items: unconfiguredItems)
+        // Both the cache and user preference can change during capture.
+        updateIdentityConfiguration(from: appState.itemManager.itemCache)
     }
 
     /// Inserts a new item at the new-item marker, defaulting to the visible section.
@@ -312,10 +257,10 @@ final class MenuBarLayoutManager {
     }
 
     /// Restores from the latest cache after a burst of item changes settles.
-    private func scheduleRestore() {
+    private func scheduleRestore(delay: Duration = .milliseconds(200)) {
         scheduledRestoreTask?.cancel()
         scheduledRestoreTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(200))
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self, let appState else {
                 return
             }
@@ -358,11 +303,16 @@ final class MenuBarLayoutManager {
     /// Restores the preferred layout from the given cache.
     private func restoreLayout(from cache: MenuBarItemManager.ItemCache) async {
         guard
-            canRestoreLayout,
             let appState,
             let configuration,
             let move = nextMove(for: configuration, cache: cache)
         else {
+            return
+        }
+        guard canRestoreLayout else {
+            // The cache may remain unchanged after a drag or while settings are
+            // open. Keep the pending move until restoration is allowed again.
+            scheduleRestore(delay: .seconds(1))
             return
         }
 
@@ -376,14 +326,15 @@ final class MenuBarLayoutManager {
         do {
             Logger.layoutManager.info("Restoring \(move.item.logString) to \(move.destination.logString)")
             try await appState.itemManager.slowMove(item: move.item, to: move.destination, timeout: .seconds(2))
-            restoreFailureCounts.removeValue(forKey: identity)
+            restoreFailureCounts.removeValue(forKey: identity.info)
             await appState.itemManager.cacheItemsIfNeeded(force: true)
+            scheduleRestore(delay: .seconds(1))
         } catch is CancellationError {
             return
         } catch {
             Logger.layoutManager.error("Error restoring menu bar layout: \(error)")
-            let failures = (restoreFailureCounts[identity] ?? 0) + 1
-            restoreFailureCounts[identity] = failures
+            let failures = (restoreFailureCounts[identity.info] ?? 0) + 1
+            restoreFailureCounts[identity.info] = failures
             if failures >= maxRestoreFailures {
                 Logger.layoutManager.warning(
                     "Giving up restoring \(move.item.logString) after \(failures) consecutive failures"
@@ -537,7 +488,6 @@ final class MenuBarLayoutManager {
         in items: [MenuBarItem]
     ) -> MenuBarItem? {
         items.first { $0.info == identity.info }
-            ?? items.first { identityMatches(identity, item: $0) }
     }
 
     /// Returns whether an identity matches a menu bar item.
@@ -545,13 +495,7 @@ final class MenuBarLayoutManager {
         _ identity: MenuBarItemPersistentIdentity,
         item: MenuBarItem
     ) -> Bool {
-        if identity.info == item.info {
-            return true
-        }
-        guard let imageHash = identity.imageHash else {
-            return false
-        }
-        return imageHash == self.imageHash(for: item)
+        identity.info == item.info
     }
 
     /// Returns the persistent identity for a menu bar item.
@@ -561,38 +505,55 @@ final class MenuBarLayoutManager {
 
     /// Returns whether layout restoration should stop retrying the given item.
     private func hasReachedRestoreFailureLimit(for identity: MenuBarItemPersistentIdentity) -> Bool {
-        (restoreFailureCounts[identity] ?? 0) >= maxRestoreFailures
+        (restoreFailureCounts[identity.info] ?? 0) >= maxRestoreFailures
     }
 
     /// Returns a lightweight image hash for the given item.
     private func imageHash(for item: MenuBarItem) -> String? {
         guard
             let image = appState?.imageCache.images[item.info],
-            let data = image.dataProvider?.data,
-            let pointer = CFDataGetBytePtr(data)
+            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+            let context = CGContext(
+                data: nil,
+                width: image.width,
+                height: image.height,
+                bitsPerComponent: 8,
+                bytesPerRow: image.width * 4,
+                space: colorSpace,
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
+            )
         else {
             return nil
         }
 
-        let length = CFDataGetLength(data)
-        guard length > 0 else {
+        // Cropped images can retain the composite capture's data provider and
+        // row stride. Render only this icon into a canonical buffer so neighbors,
+        // capture groups, and source pixel formats cannot change its identity.
+        context.setBlendMode(.copy)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard let data = context.data else {
             return nil
         }
+        let length = context.bytesPerRow * image.height
+        let pointer = data.bindMemory(to: UInt8.self, capacity: length)
 
         var hash: UInt64 = 14_695_981_039_346_656_037
         let prime: UInt64 = 1_099_511_628_211
-        let stride = max(1, length / 512)
 
         hash ^= UInt64(image.width)
         hash &*= prime
         hash ^= UInt64(image.height)
         hash &*= prime
 
-        var index = 0
-        while index < length {
-            hash ^= UInt64(pointer[index])
-            hash &*= prime
-            index += stride
+        // Hash every RGBA channel. A byte sampling stride divisible by four
+        // would read only red, making black template icons indistinguishable
+        // because their shape is encoded in alpha. Ignore any row padding.
+        for row in 0..<image.height {
+            let start = row * context.bytesPerRow
+            for index in start..<(start + image.width * 4) {
+                hash ^= UInt64(pointer[index])
+                hash &*= prime
+            }
         }
 
         return String(hash, radix: 16)

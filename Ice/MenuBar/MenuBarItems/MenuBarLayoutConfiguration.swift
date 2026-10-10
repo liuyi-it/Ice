@@ -73,18 +73,84 @@ extension MenuBarLayoutConfigurationV1 {
     /// A default configuration created from an item cache.
     static func defaultConfiguration(
         from cache: MenuBarItemManager.ItemCache,
-        identityProvider: (MenuBarItem) -> MenuBarItemPersistentIdentity
+        identityProvider: (MenuBarItem) -> MenuBarItemPersistentIdentity,
+        retainingMissingItemsFrom previous: MenuBarLayoutConfigurationV1? = nil
     ) -> MenuBarLayoutConfigurationV1 {
         let sections = MenuBarSection.Name.allCases.map { section in
             var items = cache.managedItems(for: section)
                 .filter { $0.info != .iceIcon }
-                .map(identityProvider)
+                .map { item in
+                    var identity = identityProvider(item)
+                    if identity.imageHash == nil {
+                        identity.imageHash = previous?.allItems.first { $0.info == identity.info }?.imageHash
+                    }
+                    return identity
+                }
             if section == .visible {
                 items.append(.newItems)
             }
             return Section(name: section, items: items)
         }
-        return MenuBarLayoutConfigurationV1(sections: sections)
+        var configuration = MenuBarLayoutConfigurationV1(sections: sections)
+        let currentInfos = Set(configuration.allItems.map(\.info))
+        if let previous {
+            for section in MenuBarSection.Name.allCases {
+                let oldItems = previous.items(for: section)
+                var items = configuration.items(for: section)
+                // Insert missing entries before their next surviving neighbor,
+                // preserving the preferred section and relative order.
+                for (index, identity) in oldItems.enumerated() where
+                    identity.info != .newItems && identity.info != .iceIcon && !currentInfos.contains(identity.info)
+                {
+                    let nextInfos = Set(oldItems[(index + 1)...].map(\.info))
+                    let insertionIndex = items.firstIndex { nextInfos.contains($0.info) }
+                        ?? items.firstIndex { $0.info == .newItems }
+                        ?? items.endIndex
+                    items.insert(identity, at: insertionIndex)
+                }
+                configuration.setItems(items, for: section)
+            }
+        }
+        return configuration
+    }
+
+    /// Refreshes known image hashes and transfers only unique orphan matches.
+    /// Exact live infos take priority, even when two apps use identical icons.
+    mutating func reconcileIdentities(
+        _ current: [MenuBarItemPersistentIdentity],
+        resolving pendingInfos: Set<MenuBarItemInfo>
+    ) -> Bool {
+        let previous = self
+        let currentInfos = Set(current.map(\.info))
+        let orphans = allItems.filter { $0.info != .newItems && !currentInfos.contains($0.info) }
+        for identity in current {
+            guard let imageHash = identity.imageHash else {
+                continue
+            }
+            let matches = orphans.filter { $0.imageHash == imageHash }
+            let liveMatches = current.filter { $0.imageHash == imageHash }
+            if pendingInfos.contains(identity.info), matches.count == 1, liveMatches.count == 1,
+               let orphan = matches.first
+            {
+                // Remove the provisional new-item entry before replacing the
+                // original entry, including when both are in the same section.
+                for index in sections.indices {
+                    sections[index].items.removeAll { $0.info == identity.info }
+                    if let orphanIndex = sections[index].items.firstIndex(of: orphan) {
+                        sections[index].items[orphanIndex] = identity
+                    }
+                }
+            } else {
+                for sectionIndex in sections.indices {
+                    for itemIndex in sections[sectionIndex].items.indices where
+                        sections[sectionIndex].items[itemIndex].info == identity.info
+                    {
+                        sections[sectionIndex].items[itemIndex].imageHash = imageHash
+                    }
+                }
+            }
+        }
+        return self != previous
     }
 }
 

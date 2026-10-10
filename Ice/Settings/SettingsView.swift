@@ -13,6 +13,10 @@ struct SettingsView: View {
     // 配合 canCollapse=false 的 swizzle 实现"永远展开、不可折叠"。
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
+    // List reconciles its selection during view updates. Keep that selection
+    // local and publish navigation changes from onChange, after the update.
+    @State private var selection: SettingsNavigationIdentifier = .general
+
     private var sidebarWidth: CGFloat {
         switch sidebarRowSize {
         case .small: 190
@@ -46,7 +50,15 @@ struct SettingsView: View {
         } detail: {
             detailView
         }
-        .navigationTitle(navigationState.settingsNavigationIdentifier.localized)
+        .navigationTitle(selection.localized)
+        .onChange(of: selection) { _, identifier in
+            if navigationState.settingsNavigationIdentifier != identifier {
+                navigationState.settingsNavigationIdentifier = identifier
+            }
+        }
+        .onChange(of: navigationState.settingsNavigationIdentifier, initial: true) { _, identifier in
+            selection = identifier
+        }
         .onAppear {
             // 覆盖窗口状态恢复带回来的折叠状态。
             columnVisibility = .all
@@ -55,7 +67,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var sidebar: some View {
-        List(selection: $navigationState.settingsNavigationIdentifier) {
+        List(selection: $selection) {
             Section {
                 ForEach(SettingsNavigationIdentifier.allCases, id: \.self) { identifier in
                     sidebarItem(for: identifier)
@@ -75,7 +87,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var detailView: some View {
-        switch navigationState.settingsNavigationIdentifier {
+        switch selection {
         case .general:
             GeneralSettingsPane()
         case .menuBarLayout:

@@ -18,3 +18,9 @@ xcrun swiftc -swift-version 5 -module-cache-path "$test_build/ModuleCache" \
 "$test_build/RegressionTests"
 
 python3 "$project_root/Tests/run-movement-checks.py"
+
+python3 "$project_root/Tests/run-layout-checks.py"
+
+python3 "$project_root/Tests/run-window-checks.py"
+
+python3 "$project_root/Tests/run-settings-checks.py"

@@ -6,7 +6,7 @@
 Tests/run-regressions.sh
 ```
 
-脚本使用 Xcode 的 Swift 编译器，直接编译 `MouseState`、三个事件监视器、`TaskTimeout` 和 `AsyncSerialQueue` 的生产源码；不需要新增 Xcode target 或下载测试依赖。二进制和模块缓存写入已忽略的 `build/RegressionTests/`。检查失败返回非零退出码，单个检查进程运行超过 20 秒也会失败。
+脚本使用 Xcode 的 Swift 编译器，直接编译 `MouseState`、三个事件监视器、`TaskTimeout` 和 `AsyncSerialQueue` 的生产源码；不需要新增 Xcode target 或下载测试依赖。二进制和模块缓存写入已忽略的 `build/RegressionTests/`。检查失败返回非零退出码，事件和移动检查进程运行超过 20 秒、布局检查进程超过 25 秒也会失败。
 
 检查覆盖：
 
@@ -21,6 +21,38 @@ Tests/run-regressions.sh
 检查需要 macOS 的当前图形登录会话。仅创建没有窗口的检查进程，并向自己的 AppKit 队列发送事件；不移动光标、不向其他应用注入输入、不修改用户设置。
 
 `run-movement-checks.py` 从 `MenuBarItemManager` 提取实际的落点计算、事件手势和移动重试方法，在模拟的窗口位置及事件收发边界上编译执行；没有复制另一套移动实现。CoreGraphics 只创建事件对象，不向系统投递。它覆盖拖起后左右目标移位、目标消失后的松键清理、错误落点重试和重试耗尽。受限沙箱可能阻塞 CoreGraphics 初始化，此时需在正常图形会话运行。
+
+`run-layout-checks.py` 直接编译生产 `MenuBarLayoutManager` 和 `MenuBarLayoutConfiguration`，仅模拟应用状态、图像捕获、持久化及实际移动边界。它覆盖退出程序后编辑布局仍保留原分区、缺图时保留已有指纹、窗口编号变化且图像延迟到达后的隐藏恢复、没有打开 UI 时保存指纹、相同图标的歧义匹配、延迟图像的重试、捕获期间尊重人工布局、图像变化后仍遵守失败重试上限，以及冷却期结束后继续恢复 hidden 和 always-hidden。检查使用进程内存中的设置，不修改已安装 Ice 的配置或移动真实图标。
+
+图像检查还覆盖相同图标从不同大小、不同邻居的合成截图中裁剪出来时的身份恢复，以及 Retina 尺寸下不同黑色模板图标的区分，确保指纹只读取当前图标的完整 RGBA 像素，不包含邻居图标或漏掉透明度通道。
+
+窗口编号变化的恢复仍依赖屏幕录制权限和可唯一匹配的图像指纹；未获得图像或多个图标相同时，不推测图标归属。真实 ChatGPT 重启、外观变化和多显示器场景须另行人工验证。
+
+2026-10-10 在 macOS 26.7、arm64 Release 0.11.12（1117）上完成 Snipaste 两轮实机验证：每轮确认旧进程退出后重新启动，窗口编号依次为 6289 → 6333 → 6343，图像指纹保持一致，旧身份被替换，布局页均显示 Snipaste 位于 hidden。测试重启阶段停留在“通用”页以允许自动恢复，两轮之间没有重新修改布局。此结果不覆盖 ChatGPT、always-hidden、外观切换或多显示器的实机场景。
+
+`run-window-checks.py` 使用实际采样的 WindowServer 克隆窗口字典测试生产 `WindowInfo` 的解析和菜单项判定，覆盖克隆排除、macOS 26 重挂载项目、Ice 分区控制项和可选元数据缺失。它只模拟与该判定无关的 Space、壁纸查询边界。
+
+`run-settings-checks.py` 编译生产设置页、导航状态和侧栏修饰器，仅替换各设置面板内容，在自己的离屏 AppKit 窗口中切换六个页面，验证程序跳转、缩放和重开。脚本还查询自身进程日志，要求没有 SwiftUI 状态发布或 AppKit 布局重入警告，因此需要允许读取系统日志的执行环境。两个脚本均纳入 `run-regressions.sh`。
+
+2026-10-10 在 macOS 26.7（25G229）安装签名 Release 后，六个设置页面切换未再出现 SwiftUI 发布警告。Snipaste 退出重开时实际捕获到两个 `System Status Item Clone` 窗口，Ice 没有再尝试恢复或移动它们；Snipaste 新窗口保持在隐藏分区，持久化图像标识不变。
+
+完整应用启动仍有一次 AppKit `layoutSubtreeIfNeeded` 重入警告。独立对照程序只使用 `NSApplication.run()`、在 `applicationDidFinishLaunching` 创建一个标准 `NSStatusItem.squareLength` 项并设置系统符号图片，也会在当前系统产生同一警告。该对照不包含 Ice、SwiftUI、约束修改或事件注入；仅运行 `RunLoop` 而未启动完整 AppKit 生命周期的探针不能复现。此系统启动诊断应与设置页面测试结果分开报告，不能宣称整机运行日志完全无警告。
+
+## 滑块依赖升级检查
+
+完成文档中的 Debug 构建后，执行：
+
+```sh
+python3 Tests/run-slider-checks.py
+```
+
+脚本链接本次构建的 CompactSlider 模块，并编译生产 `IceSlider`。在独立进程中离屏渲染，检查浅色/深色下的 24 点高度和绑定值变化后的重绘，以及禁用、Float 数值和可选择标签的组合。它还检查 SwiftUI 的零宽测量恢复到正常宽度后能够渲染。需要读取测试进程的 SwiftUI 运行告警时，在允许读取系统日志的环境中执行：
+
+```sh
+python3 Tests/run-slider-checks.py build/DerivedData/Build/Products/Debug --check-runtime-issues
+```
+
+它不打开真实设置窗口、不注入系统输入、不修改用户设置；拖拽步进和持久化仍须人工验证。
 
 ## 缺陷复现依据
 
@@ -53,9 +85,10 @@ python3 Tests/check-manual-updates.py /path/to/Ice.app
 1. 连续点击、按住后松开 Ice 按钮，拖动菜单栏项目，关闭菜单；采样确认没有持续忙循环，并记录空闲 CPU。
 2. 左右键同时按住、依次松开，确认仍有按键按住时不会自动隐藏或移动项目。
 3. 在布局页快速连续拖动同一和不同图标，跨 visible、hidden、always-hidden 分区及区内调整顺序，确认无超时、最终位置正确；检查取消拖拽、拖动后的持久化和重启后恢复。
-4. 多显示器、全屏 Space、刘海和系统自动隐藏菜单栏场景。
-5. 快速切换应用、浅色和深色外观，确认菜单栏覆盖层位置正确；重复打开和关闭 Ice Bar、设置窗口后检查内存。
-6. 快捷键注册、修改、冲突和重启恢复。
-7. 辅助功能或屏幕录制权限未授予、授予和撤销后的行为。
+4. 将 ChatGPT 移到 hidden，再退出并重开，确认回到 hidden；对 always-hidden 重复。退出 ChatGPT 后移动其他图标，再重开 ChatGPT，确认原分区记录保留。关闭布局页及 Ice Bar 后重复，确认恢复不依赖打开 UI。
+5. 多显示器、全屏 Space、刘海和系统自动隐藏菜单栏场景。
+6. 快速切换应用、浅色和深色外观，确认菜单栏覆盖层位置正确；重复打开和关闭 Ice Bar、设置窗口后检查内存。
+7. 快捷键注册、修改、冲突和重启恢复。
+8. 辅助功能或屏幕录制权限未授予、授予和撤销后的行为。
 
 构建、静态分析和这些独立回归检查不能替代以上人工场景。

@@ -24,3 +24,5 @@ python3 "$project_root/Tests/run-layout-checks.py"
 python3 "$project_root/Tests/run-window-checks.py"
 
 python3 "$project_root/Tests/run-settings-checks.py"
+
+python3 "$project_root/Tests/run-ice-bar-checks.py"

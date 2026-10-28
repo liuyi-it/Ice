@@ -45,6 +45,9 @@ final class MenuBarItemImageCache: ObservableObject {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    @MainActor private var updateTask: Task<Void, Never>?
+    @MainActor private var pendingSections = Set<MenuBarSection.Name>()
+
     /// Creates a cache with the given app state.
     init(appState: AppState) {
         self.appState = appState
@@ -215,7 +218,29 @@ final class MenuBarItemImageCache: ObservableObject {
     }
 
     /// Updates the cache for the given sections, without checking whether caching is necessary.
+    @MainActor
     func updateCacheWithoutChecks(sections: [MenuBarSection.Name]) async {
+        pendingSections.formUnion(sections)
+        if let updateTask {
+            await updateTask.value
+            return
+        }
+
+        let task = Task {
+            while !pendingSections.isEmpty {
+                let sections = MenuBarSection.Name.allCases.filter { pendingSections.contains($0) }
+                pendingSections.subtract(sections)
+                await captureImages(sections: sections)
+            }
+            updateTask = nil
+        }
+        updateTask = task
+        await task.value
+    }
+
+    /// Performs WindowServer capture away from the main actor. Concurrent UI and
+    /// timer requests share one worker so an older capture cannot overwrite a newer one.
+    private func captureImages(sections: [MenuBarSection.Name]) async {
         guard
             let appState,
             let captureContext = await MenuBarImageCaptureContext.main()
@@ -304,6 +329,11 @@ final class MenuBarItemImageCache: ObservableObject {
             isIceBarPresented,
             let section = await appState.menuBarManager.iceBarPanel.currentSection
         {
+            // The hidden bar also includes visible-section items obscured by
+            // application menus or the notch. Refresh their images as well.
+            if section == .hidden {
+                sectionsNeedingDisplay.append(.visible)
+            }
             sectionsNeedingDisplay.append(section)
         }
 

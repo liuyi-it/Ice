@@ -8,14 +8,18 @@ import SwiftUI
 
 // MARK: - IceBarPanel
 
-final class IceBarPanel: NSPanel {
+final class IceBarPanel: NSPanel, ObservableObject {
     private weak var appState: AppState?
 
     private(set) var currentSection: MenuBarSection.Name?
+    @Published private(set) var isRefreshing = false
 
     private lazy var colorManager = IceBarColorManager(iceBarPanel: self)
 
     private var cancellables = Set<AnyCancellable>()
+
+    private var refreshTask: Task<Void, Never>?
+    private var presentationID: UUID?
 
     init(appState: AppState) {
         super.init(
@@ -159,43 +163,46 @@ final class IceBarPanel: NSPanel {
             return
         }
 
-        // Important that we set the navigation state and current section before updating the cache.
+        refreshTask?.cancel()
+        let presentationID = UUID()
+        self.presentationID = presentationID
         appState.navigationState.isIceBarPresented = true
         currentSection = section
+        isRefreshing = true
 
-        await appState.itemManager.cacheItemsIfNeeded()
-
-        // The panel may have been closed while we were awaiting (e.g. by a
-        // space change or the menu bar being hidden). Don't resurrect it with
-        // a stale section and inconsistent navigation state.
-        guard appState.navigationState.isIceBarPresented, currentSection == section else {
-            return
-        }
-
-        if ScreenCapture.cachedCheckPermissions() {
-            await appState.imageCache.updateCache()
-        }
-
-        guard appState.navigationState.isIceBarPresented, currentSection == section else {
-            return
-        }
-
-        contentView = IceBarHostingView(appState: appState, colorManager: colorManager, screen: screen, section: section) { [weak self] in
+        contentView = IceBarHostingView(appState: appState, panel: self, colorManager: colorManager, screen: screen, section: section) { [weak self] in
             self?.close()
         }
 
         updateOrigin(for: screen)
-
-        // Color manager must be updated after updating the panel's origin, but before it is shown.
-        //
-        // Color manager handles frame changes automatically, but does so on the main queue, so we
-        // need to update manually once before showing the panel to prevent the color from flashing.
-        colorManager.updateAllProperties(with: frame, screen: screen)
-
+        colorManager.updateColorInfo(with: frame, screen: screen)
         orderFrontRegardless()
+
+        // Present the cached content first. Neither the item-operation queue nor
+        // WindowServer image capture should delay opening the panel.
+        refreshTask = Task { [weak self] in
+            defer {
+                if self?.presentationID == presentationID {
+                    self?.isRefreshing = false
+                }
+            }
+            await appState.itemManager.cacheItemsIfNeeded()
+            guard
+                !Task.isCancelled,
+                self?.presentationID == presentationID,
+                ScreenCapture.cachedCheckPermissions()
+            else {
+                return
+            }
+            await appState.imageCache.updateCache()
+        }
     }
 
     override func close() {
+        refreshTask?.cancel()
+        refreshTask = nil
+        presentationID = nil
+        isRefreshing = false
         super.close()
         contentView = nil
         currentSection = nil
@@ -212,6 +219,7 @@ private final class IceBarHostingView: NSHostingView<AnyView> {
 
     init(
         appState: AppState,
+        panel: IceBarPanel,
         colorManager: IceBarColorManager,
         screen: NSScreen,
         section: MenuBarSection.Name,
@@ -220,6 +228,7 @@ private final class IceBarHostingView: NSHostingView<AnyView> {
         super.init(
             rootView: IceBarContentView(screen: screen, section: section, closePanel: closePanel)
                 .environmentObject(appState)
+                .environmentObject(panel)
                 .environmentObject(appState.imageCache)
                 .environmentObject(appState.itemManager)
                 .environmentObject(appState.menuBarManager)
@@ -247,6 +256,7 @@ private final class IceBarHostingView: NSHostingView<AnyView> {
 
 private struct IceBarContentView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var panel: IceBarPanel
     @EnvironmentObject var colorManager: IceBarColorManager
     @EnvironmentObject var itemManager: MenuBarItemManager
     @EnvironmentObject var imageCache: MenuBarItemImageCache
@@ -341,9 +351,26 @@ private struct IceBarContentView: View {
         } else if menuBarManager.isMenuBarHiddenBySystemUserDefaults {
             Text("Ice 无法为自动隐藏的菜单栏显示菜单栏项目")
                 .padding(.horizontal, 10)
-        } else if imageCache.cacheFailed(for: section) {
-            Text("无法显示菜单栏项目")
-                .padding(.horizontal, 10)
+        } else {
+            itemContent(items: items)
+        }
+    }
+
+    @ViewBuilder
+    private func itemContent(items: [MenuBarItem]) -> some View {
+        if imageCache.cacheFailed(for: section) || items.isEmpty {
+            HStack {
+                if panel.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在载入菜单栏项目…")
+                } else if items.isEmpty {
+                    Text("没有可显示的菜单栏项目")
+                } else {
+                    Text("无法显示菜单栏项目")
+                }
+            }
+            .padding(.horizontal, 10)
         } else {
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {

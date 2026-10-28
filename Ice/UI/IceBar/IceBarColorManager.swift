@@ -6,12 +6,15 @@
 import Cocoa
 import Combine
 
+@MainActor
 final class IceBarColorManager: ObservableObject {
     @Published private(set) var colorInfo: MenuBarAverageColorInfo?
 
     private weak var iceBarPanel: IceBarPanel?
 
     private var windowImage: CGImage?
+    private var captureTask: Task<Void, Never>?
+    private var captureDisplayID: CGDirectDisplayID?
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -93,17 +96,36 @@ final class IceBarColorManager: ObservableObject {
 
     private func updateWindowImage(for screen: NSScreen) {
         let displayID = screen.displayID
+        guard captureTask == nil || captureDisplayID != displayID else {
+            return
+        }
+        captureTask?.cancel()
+        captureDisplayID = displayID
+        captureTask = Task { [weak self] in
+            let image = await Self.captureMenuBarImage(for: displayID)
+            guard !Task.isCancelled, let self else {
+                return
+            }
+            captureTask = nil
+            guard let panel = iceBarPanel, let screen = panel.screen, screen.displayID == displayID else {
+                return
+            }
+            windowImage = image
+            updateColorInfo(with: panel.frame, screen: screen)
+        }
+    }
+
+    nonisolated private static func captureMenuBarImage(for displayID: CGDirectDisplayID) async -> CGImage? {
         if
             let window = WindowInfo.getMenuBarWindow(for: displayID),
             let image = ScreenCapture.captureWindow(window.windowID, option: .nominalResolution)
         {
-            windowImage = image
-        } else {
-            windowImage = nil
+            return image
         }
+        return nil
     }
 
-    private func updateColorInfo(with frame: CGRect, screen: NSScreen) {
+    func updateColorInfo(with frame: CGRect, screen: NSScreen) {
         guard let windowImage else {
             colorInfo = nil
             return
@@ -125,10 +147,5 @@ final class IceBarColorManager: ObservableObject {
         }
 
         colorInfo = MenuBarAverageColorInfo(color: averageColor, source: .menuBarWindow)
-    }
-
-    func updateAllProperties(with frame: CGRect, screen: NSScreen) {
-        updateWindowImage(for: screen)
-        updateColorInfo(with: frame, screen: screen)
     }
 }

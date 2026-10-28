@@ -331,20 +331,20 @@ extension MenuBarItemManager {
         let hiddenSection = appState?.menuBarManager.section(withName: .hidden)
         let alwaysHiddenSection = appState?.menuBarManager.section(withName: .alwaysHidden)
 
-        // Try frame-based matching first (macOS 26+ compatibility),
-        // fall back to title-based matching.
+        // Hosted control items retain their stable titles on macOS 26. Their
+        // AppKit window frames can lag behind the WindowServer representation.
         let hiddenControlItem: MenuBarItem?
         if let hiddenSection {
-            hiddenControlItem = items.firstIndex(matchingControlItem: hiddenSection.controlItem).map({ items.remove(at: $0) })
-                ?? items.firstIndex(matching: .hiddenControlItem).map({ items.remove(at: $0) })
+            hiddenControlItem = items.firstIndex(matching: .hiddenControlItem).map({ items.remove(at: $0) })
+                ?? items.firstIndex(matchingControlItem: hiddenSection.controlItem).map({ items.remove(at: $0) })
         } else {
             hiddenControlItem = items.firstIndex(matching: .hiddenControlItem).map({ items.remove(at: $0) })
         }
 
         let alwaysHiddenControlItem: MenuBarItem?
         if let alwaysHiddenSection {
-            alwaysHiddenControlItem = items.firstIndex(matchingControlItem: alwaysHiddenSection.controlItem).map({ items.remove(at: $0) })
-                ?? items.firstIndex(matching: .alwaysHiddenControlItem).map({ items.remove(at: $0) })
+            alwaysHiddenControlItem = items.firstIndex(matching: .alwaysHiddenControlItem).map({ items.remove(at: $0) })
+                ?? items.firstIndex(matchingControlItem: alwaysHiddenSection.controlItem).map({ items.remove(at: $0) })
         } else {
             alwaysHiddenControlItem = items.firstIndex(matching: .alwaysHiddenControlItem).map({ items.remove(at: $0) })
         }
@@ -1314,8 +1314,15 @@ extension MenuBarItemManager {
             return sectionItems
         }
 
+        // Take one snapshot for the whole bar. Re-querying every window and AX
+        // menu for each icon stalls SwiftUI layout and mixes different layouts.
+        let items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        let applicationMenuFrame = appState?.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
         let inaccessibleVisibleItems = itemCache.managedItems(for: .visible).filter { item in
-            !itemIsDirectlyClickable(item, on: screen)
+            guard let currentItem = currentItem(matching: item, in: items) else {
+                return false
+            }
+            return !itemIsDirectlyClickable(currentItem, on: screen, applicationMenuFrame: applicationMenuFrame)
         }
 
         return (inaccessibleVisibleItems + sectionItems).uniquedByInfo()
@@ -1332,18 +1339,34 @@ extension MenuBarItemManager {
             return false
         }
 
-        let screen = screen ?? NSScreen.screens.first { $0.frame.intersects(currentItem.frame) }
+        let screen = screen ?? NSScreen.screens.first { CGDisplayBounds($0.displayID).intersects(currentItem.frame) }
+        let applicationMenuFrame = screen.flatMap { appState?.menuBarManager.getApplicationMenuFrame(for: $0.displayID) }
+        return itemIsDirectlyClickable(currentItem, on: screen, applicationMenuFrame: applicationMenuFrame)
+    }
+
+    private func itemIsDirectlyClickable(_ item: MenuBarItem, on screen: NSScreen?, applicationMenuFrame: CGRect?) -> Bool {
+        guard item.isOnScreen else {
+            return false
+        }
         if let screen {
-            guard screen.frame.intersects(currentItem.frame) else {
+            let displayBounds = CGDisplayBounds(screen.displayID)
+            guard displayBounds.intersects(item.frame) else {
                 return false
             }
-            if let notchFrame = screen.frameOfNotch, notchFrame.intersects(currentItem.frame) {
-                return false
+            if let notchFrame = screen.frameOfNotch {
+                let notchBounds = CGRect(
+                    x: displayBounds.minX + notchFrame.minX - screen.frame.minX,
+                    y: displayBounds.minY + screen.frame.maxY - notchFrame.maxY,
+                    width: notchFrame.width,
+                    height: notchFrame.height
+                )
+                if notchBounds.intersects(item.frame) {
+                    return false
+                }
             }
             if
-                let appState,
-                let applicationMenuFrame = appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID),
-                currentItem.frame.minX < applicationMenuFrame.maxX
+                let applicationMenuFrame,
+                item.frame.minX < applicationMenuFrame.maxX
             {
                 return false
             }
@@ -1358,12 +1381,12 @@ extension MenuBarItemManager {
             ?? items.first { $0.info == item.info }
     }
 
-    /// Returns the hidden control item index, using frame matching before
-    /// falling back to the title-based identity.
+    /// Returns the hidden control item index, preferring its stable identity
+    /// over AppKit window frames that can lag behind the hosted window.
     private func hiddenControlItemIndex(in items: [MenuBarItem]) -> [MenuBarItem].Index? {
         let hiddenSection = appState?.menuBarManager.section(withName: .hidden)
-        return hiddenSection.flatMap { items.firstIndex(matchingControlItem: $0.controlItem) }
-            ?? items.firstIndex(matching: .hiddenControlItem)
+        return items.firstIndex(matching: .hiddenControlItem)
+            ?? hiddenSection.flatMap { items.firstIndex(matchingControlItem: $0.controlItem) }
     }
 
     /// Returns whether the given item is currently in the visible section.

@@ -260,6 +260,70 @@ enum MenuBarLayoutTests {
     static func main() async throws {
         let scenario = CommandLine.arguments.dropFirst().first
 
+        if scenario == nil || scenario == "legacy-fingerprint" {
+            let old = MenuBarItemPersistentIdentity(info: item("Old").info, imageHash: "full-window")
+            let fresh = MenuBarItemPersistentIdentity(info: item("Fresh").info, imageHash: "content")
+            let canonical = MenuBarItemPersistentIdentity(info: item("Canonical").info, imageHash: "content")
+            var configuration = MenuBarLayoutConfigurationV1(sections: [
+                .init(name: .hidden, items: [old]),
+                .init(name: .visible, items: [fresh]),
+            ])
+            _ = configuration.reconcileIdentities(
+                [fresh], resolving: [fresh.info], legacyImageHashes: [fresh.info: "full-window"]
+            )
+            check(configuration.items(for: .hidden) == [fresh], "legacy full-window fingerprints migrate to content fingerprints")
+            configuration = MenuBarLayoutConfigurationV1(sections: [
+                .init(name: .hidden, items: [canonical]),
+                .init(name: .alwaysHidden, items: [old]),
+                .init(name: .visible, items: [fresh]),
+            ])
+            _ = configuration.reconcileIdentities(
+                [fresh], resolving: [fresh.info], legacyImageHashes: [fresh.info: "full-window"]
+            )
+            check(configuration.items(for: .hidden) == [fresh], "canonical preference takes priority over a conflicting legacy fingerprint")
+        }
+
+        if scenario == nil || scenario == "capture-height" {
+            let app = fixture()
+            let old = item("Codex-hidden")
+            let fresh = item("Codex-relaunched")
+            let fullIcon = templateIcon(offset: 3)
+            let height = Int(NSStatusBar.system.thickness * (NSScreen.main?.backingScaleFactor ?? 1))
+            guard let croppedIcon = fullIcon.cropping(to: CGRect(
+                x: 0,
+                y: (fullIcon.height - height) / 2,
+                width: fullIcon.width,
+                height: height
+            )) else { fatalError("Could not crop the status icon") }
+            app.itemManager.itemCache.items = [.hidden: [old]]
+            app.imageCache.images = [old.info: croppedIcon]
+            app.layoutManager.recordCurrentLayout(reason: "individual hidden capture")
+            app.itemManager.itemCache.items = [.visible: [fresh]]
+            app.imageCache.images = [fresh.info: fullIcon]
+            app.layoutManager.performSetup()
+            try await pause()
+            check(app.itemManager.moves.contains(fresh), "composite and individual capture heights identify the same relaunched icon")
+        }
+
+        if scenario == nil || scenario == "same-section-orphans" {
+            let app = fixture()
+            let first = item("Codex-older-window")
+            let second = item("Codex-old-window")
+            let fresh = item("Codex-relaunched")
+            app.itemManager.itemCache.items = [.hidden: [first, second]]
+            app.imageCache.images = [first.info: image(20), second.info: image(20)]
+            app.layoutManager.recordCurrentLayout(reason: "historical hidden identities")
+            app.itemManager.itemCache.items = [.visible: [fresh]]
+            app.imageCache.images = [fresh.info: image(20)]
+            app.layoutManager.performSetup()
+            try await pause()
+            check(app.itemManager.moves.contains(fresh), "orphan matches sharing one section restore their common preference")
+            check(
+                try stored().items(for: .hidden).map(\.info) == [first.info, second.info, fresh.info],
+                "ambiguous identities retain their history without guessing which old app was replaced"
+            )
+        }
+
         if scenario == nil || scenario == "system-order" {
             let app = fixture()
             let control = item("BentoBox-0")

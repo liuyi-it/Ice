@@ -114,11 +114,12 @@ extension MenuBarLayoutConfigurationV1 {
         return configuration
     }
 
-    /// Refreshes known image hashes and transfers only unique orphan matches.
+    /// Refreshes image hashes and restores unambiguous section preferences.
     /// Exact live infos take priority, even when two apps use identical icons.
     mutating func reconcileIdentities(
         _ current: [MenuBarItemPersistentIdentity],
-        resolving pendingInfos: Set<MenuBarItemInfo>
+        resolving pendingInfos: Set<MenuBarItemInfo>,
+        legacyImageHashes: [MenuBarItemInfo: String] = [:]
     ) -> Bool {
         let previous = self
         let currentInfos = Set(current.map(\.info))
@@ -127,18 +128,37 @@ extension MenuBarLayoutConfigurationV1 {
             guard let imageHash = identity.imageHash else {
                 continue
             }
-            let matches = orphans.filter { $0.imageHash == imageHash }
+            var matches = orphans.filter { $0.imageHash == imageHash }
+            if matches.isEmpty, let legacyHash = legacyImageHashes[identity.info] {
+                // Older layouts may contain a full-window fingerprint. Prefer
+                // canonical content matches, and migrate legacy matches only
+                // when no canonical preference is available.
+                matches = orphans.filter { $0.imageHash == legacyHash }
+            }
             let liveMatches = current.filter { $0.imageHash == imageHash }
-            if pendingInfos.contains(identity.info), matches.count == 1, liveMatches.count == 1,
-               let orphan = matches.first
+            let matchingSections = sections.indices.filter { index in
+                sections[index].items.contains { matches.contains($0) }
+            }
+            if pendingInfos.contains(identity.info), liveMatches.count == 1,
+               let sectionIndex = matchingSections.first, matchingSections.count == 1
             {
                 // Remove the provisional new-item entry before replacing the
                 // original entry, including when both are in the same section.
                 for index in sections.indices {
                     sections[index].items.removeAll { $0.info == identity.info }
-                    if let orphanIndex = sections[index].items.firstIndex(of: orphan) {
-                        sections[index].items[orphanIndex] = identity
-                    }
+                }
+                if matches.count == 1, let orphan = matches.first,
+                   let index = sections[sectionIndex].items.firstIndex(of: orphan)
+                {
+                    sections[sectionIndex].items[index] = identity
+                } else {
+                    // Historical windows may share a fingerprint. They cannot
+                    // identify one old app, but if every match agrees on its
+                    // section, that preference is safe to restore. Keep all old
+                    // entries and append after the matching group.
+                    let index = sections[sectionIndex].items.lastIndex { matches.contains($0) }
+                        .map { $0 + 1 } ?? sections[sectionIndex].items.endIndex
+                    sections[sectionIndex].items.insert(identity, at: index)
                 }
             } else {
                 for sectionIndex in sections.indices {

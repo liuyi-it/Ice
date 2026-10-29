@@ -211,7 +211,13 @@ final class MenuBarLayoutManager {
             return
         }
         let identities = cache.managedItems.map(persistentIdentity(for:))
-        if configuration.reconcileIdentities(identities, resolving: pendingIdentityInfos) {
+        let legacyHashes = cache.managedItems.reduce(into: [MenuBarItemInfo: String]()) { hashes, item in
+            guard pendingIdentityInfos.contains(item.info), let hash = imageHash(for: item, contentOnly: false) else {
+                return
+            }
+            hashes[item.info] = hash
+        }
+        if configuration.reconcileIdentities(identities, resolving: pendingIdentityInfos, legacyImageHashes: legacyHashes) {
             self.configuration = configuration
             save()
             // Identity changes do not change ItemCache. Its removeDuplicates()
@@ -525,9 +531,22 @@ final class MenuBarLayoutManager {
     }
 
     /// Returns a lightweight image hash for the given item.
-    private func imageHash(for item: MenuBarItem) -> String? {
+    private func imageHash(for item: MenuBarItem, contentOnly: Bool = true) -> String? {
+        guard let capturedImage = appState?.imageCache.images[item.info] else {
+            return nil
+        }
+        // Composite captures include the full status window (33 points on a
+        // notched display), while individual captures use the 22-point status
+        // item content. Hash the same centered content in both cases.
+        let scale = NSScreen.main?.backingScaleFactor ?? 1
+        let height = contentOnly ? min(capturedImage.height, Int(NSStatusBar.system.thickness * scale)) : capturedImage.height
         guard
-            let image = appState?.imageCache.images[item.info],
+            let image = capturedImage.cropping(to: CGRect(
+                x: 0,
+                y: (capturedImage.height - height) / 2,
+                width: capturedImage.width,
+                height: height
+            )),
             let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
             let context = CGContext(
                 data: nil,

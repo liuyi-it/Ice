@@ -322,12 +322,21 @@ final class MenuBarLayoutManager {
         }
 
         let identity = persistentIdentity(for: move.item)
+        let previousItems = MenuBarSection.Name.allCases.map { cache.managedItems(for: $0).map(\.info) }
 
         do {
             Logger.layoutManager.info("Restoring \(move.item.logString) to \(move.destination.logString)")
             try await appState.itemManager.slowMove(item: move.item, to: move.destination, timeout: .seconds(2))
-            restoreFailureCounts.removeValue(forKey: identity.info)
             await appState.itemManager.cacheItemsIfNeeded(force: true)
+            let currentItems = MenuBarSection.Name.allCases.map {
+                appState.itemManager.itemCache.managedItems(for: $0).map(\.info)
+            }
+            guard currentItems != previousItems else {
+                // An already-correct physical destination can still disagree
+                // with a stale/duplicate logical order. Do not retry forever.
+                throw MenuBarItemManager.EventError(code: .couldNotComplete, item: move.item)
+            }
+            restoreFailureCounts.removeValue(forKey: identity.info)
             scheduleRestore(delay: .seconds(1))
         } catch is CancellationError {
             return
@@ -339,9 +348,9 @@ final class MenuBarLayoutManager {
                 Logger.layoutManager.warning(
                     "Giving up restoring \(move.item.logString) after \(failures) consecutive failures"
                 )
-            } else {
-                scheduleRestore()
             }
+            // Reaching one item's limit must not strand the remaining items.
+            scheduleRestore()
         }
     }
 
@@ -354,6 +363,7 @@ final class MenuBarLayoutManager {
 
         if
             let iceIcon = cache.managedItems.first(where: { $0.info == .iceIcon }),
+            !hasReachedRestoreFailureLimit(for: MenuBarItemPersistentIdentity(info: iceIcon.info)),
             cache.managedItems(for: .visible).first != iceIcon,
             let hiddenControlItem = controlItem(.hidden, in: allItems)
         {
@@ -367,7 +377,7 @@ final class MenuBarLayoutManager {
                 guard !hasReachedRestoreFailureLimit(for: identity) else {
                     continue
                 }
-                guard let item = item(matching: identity, in: cache.managedItems) else {
+                guard let item = item(matching: identity, in: cache.managedItems), item.isMovable else {
                     continue
                 }
                 if cache.section(for: item) != section {
@@ -375,7 +385,12 @@ final class MenuBarLayoutManager {
                         .map { (item, $0) }
                 }
             }
+        }
 
+        // Restore section membership before spending time on within-section
+        // ordering. A visible ordering problem must not strand hidden apps.
+        for section in MenuBarSection.Name.allCases {
+            let desired = configuration.items(for: section).filter { !$0.isNewItemMarker }
             guard let misordered = firstMisorderedItem(in: section, desired: desired, cache: cache) else {
                 continue
             }
@@ -404,7 +419,8 @@ final class MenuBarLayoutManager {
         let desiredItems = desired
             .filter { !hasReachedRestoreFailureLimit(for: $0) }
             .compactMap { identity in
-                item(matching: identity, in: cache.managedItems(for: section)).map { (identity, $0) }
+                item(matching: identity, in: cache.managedItems(for: section))
+                    .flatMap { $0.isMovable ? (identity, $0) : nil }
             }
         let actualItems = cache.managedItems(for: section).filter { item in
             desiredItems.contains { identityMatches($0.0, item: item) }

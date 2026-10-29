@@ -190,11 +190,12 @@ extension MenuBarItem {
             }
         }
 
-        return Bridging.getWindowList(option: option).lazy
+        let windows = Bridging.getWindowList(option: option).lazy
             .filter(boundsPredicate)
-            .compactMap { windowID in
-                MenuBarItem(windowID: windowID)
-            }
+            .compactMap { WindowInfo(windowID: $0) }
+        let applicationBundleIdentifiers = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        return WindowInfo.menuBarItemWindows(from: Array(windows), applicationBundleIdentifiers: applicationBundleIdentifiers)
+            .map { MenuBarItem(uncheckedItemWindow: $0) }
             .sortedByOrderInMenuBar()
     }
 }

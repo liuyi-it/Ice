@@ -187,6 +187,53 @@ extension WindowInfo {
 
 // MARK: All Windows
 extension WindowInfo {
+    /// Selects one status window per physical item, excluding hosted aliases.
+    static func menuBarItemWindows(
+        from windows: [WindowInfo],
+        applicationBundleIdentifiers: Set<String> = []
+    ) -> [WindowInfo] {
+        var result = [WindowInfo]()
+        for window in windows where window.isMenuBarItem {
+            if
+                #available(macOS 26.0, *),
+                !window.isOnScreen,
+                let title = window.title,
+                applicationBundleIdentifiers.contains(title),
+                window.owningApplication?.bundleIdentifier == "com.apple.controlcenter"
+            {
+                // Registration windows can retain stale/default coordinates.
+                // They do not render the hosted icon or receive its events.
+                continue
+            }
+            guard let index = result.firstIndex(where: {
+                $0.ownerPID == window.ownerPID && $0.frame == window.frame
+            }) else {
+                result.append(window)
+                continue
+            }
+
+            let existing = result[index]
+            if window.isOnScreen != existing.isOnScreen {
+                if window.isOnScreen {
+                    result[index] = window
+                }
+            } else {
+                // macOS 26 also lists registration windows named after the
+                // source bundle, even when the real hosted item is off screen.
+                // Prefer the status title (Item-0, HItem, Clock, etc.) to that
+                // alias or an empty title. Never merge different owners/frames.
+                func titlePriority(_ title: String?) -> Int {
+                    guard let title, !title.isEmpty else { return 0 }
+                    return title.contains(".") ? 1 : 2
+                }
+                if titlePriority(window.title) > titlePriority(existing.title) {
+                    result[index] = window
+                }
+            }
+        }
+        return result
+    }
+
     /// Returns the current windows.
     ///
     /// - Parameter excludeDesktopWindows: A Boolean value that indicates whether

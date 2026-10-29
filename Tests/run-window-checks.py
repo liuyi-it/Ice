@@ -12,5 +12,7 @@ source.write_text((root / 'Ice/Utilities/WindowInfo.swift').read_text() + '\n' +
                   (root / 'Tests/WindowInfoTests.swift').read_text())
 executable = build / 'WindowInfoTests'
 subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-swift-version', '5',
-                '-module-cache-path', str(build / 'ModuleCache'), str(source), '-o', str(executable)], check=True)
+                '-module-cache-path', str(build / 'ModuleCache'),
+                str(root / 'Ice/MenuBar/MenuBarItems/MenuBarItemInfo.swift'),
+                str(source), '-o', str(executable)], check=True)
 sys.exit(subprocess.run([str(executable)], timeout=10).returncode)

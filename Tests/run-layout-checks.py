@@ -16,4 +16,4 @@ subprocess.run([
     str(source_root / 'Ice/MenuBar/MenuBarItems/MenuBarLayoutManager.swift'),
     str(root / 'Tests/MenuBarLayoutTests.swift'), '-o', str(executable),
 ], check=True)
-sys.exit(subprocess.run([str(executable), *sys.argv[2:]], timeout=25).returncode)
+sys.exit(subprocess.run([str(executable), *sys.argv[2:]], timeout=40).returncode)

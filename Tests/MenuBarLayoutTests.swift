@@ -20,6 +20,7 @@ struct MenuBarItemInfo: Codable, Hashable, CustomStringConvertible {
 
 struct MenuBarItem: Hashable {
     let info: MenuBarItemInfo
+    var isMovable: Bool { !["Clock", "BentoBox-0"].contains(info.title) }
     var logString: String { info.description }
     static var currentItems = [MenuBarItem]()
     static func getMenuBarItems(onScreenOnly: Bool, activeSpaceOnly: Bool) -> [Self] { currentItems }
@@ -63,13 +64,21 @@ final class MenuBarItemManager {
     var cooldownEnd = Date.distantPast
     var moves = [MenuBarItem]()
     var shouldFailMoves = false
+    var leavesLayoutUnchanged = false
+    var failedItems = Set<MenuBarItem>()
     enum MoveError: Error { case unavailable }
+    struct EventError: Error {
+        enum Code { case couldNotComplete }
+        let code: Code
+        let item: MenuBarItem
+    }
     func cacheItemsIfNeeded(force: Bool) async { itemCache = itemCache }
     func slowMove(item: MenuBarItem, to destination: MoveDestination, timeout: Duration) async throws {
         moves.append(item)
-        if shouldFailMoves {
+        if shouldFailMoves || failedItems.contains(item) {
             throw MoveError.unavailable
         }
+        if leavesLayoutUnchanged { return }
         for section in MenuBarSection.Name.allCases { itemCache.items[section]?.removeAll { $0 == item } }
         let section: MenuBarSection.Name
         switch destination {
@@ -250,6 +259,86 @@ enum MenuBarLayoutTests {
     @MainActor
     static func main() async throws {
         let scenario = CommandLine.arguments.dropFirst().first
+
+        if scenario == nil || scenario == "system-order" {
+            let app = fixture()
+            let control = item("BentoBox-0")
+            let clock = item("Clock")
+            let chat = item("ChatGPT")
+            app.itemManager.itemCache.items = [.visible: [control, clock, chat]]
+            app.layoutManager.recordCurrentLayout(reason: "legacy order after system items")
+            app.itemManager.itemCache.items = [.visible: [chat, control, clock]]
+            ScreenCapture.permitted = false
+            app.layoutManager.performSetup()
+            try await pause(2)
+            check(app.itemManager.moves.isEmpty, "fixed system icons cannot start a repeating order restoration")
+        }
+
+        if scenario == nil || scenario == "section-priority" {
+            let app = fixture()
+            let first = item("Visible-first")
+            let second = item("Visible-second")
+            let chat = item("ChatGPT")
+            app.itemManager.itemCache.items = [.visible: [first, second], .hidden: [chat]]
+            app.layoutManager.recordCurrentLayout(reason: "hidden ChatGPT")
+            app.itemManager.itemCache.items = [.visible: [second, first, chat]]
+            app.itemManager.shouldFailMoves = true
+            ScreenCapture.permitted = false
+            app.layoutManager.performSetup()
+            try await pause()
+            check(app.itemManager.moves.first == chat, "section restoration precedes unrelated visible ordering")
+        }
+
+        if scenario == nil || scenario == "no-progress" {
+            let app = fixture()
+            let chat = item("ChatGPT")
+            app.itemManager.itemCache.items = [.hidden: [chat]]
+            app.layoutManager.recordCurrentLayout(reason: "hidden ChatGPT")
+            app.itemManager.itemCache.items = [.visible: [chat]]
+            app.itemManager.leavesLayoutUnchanged = true
+            ScreenCapture.permitted = false
+            app.layoutManager.performSetup()
+            try await pause(2)
+            let attemptsAtLimit = app.itemManager.moves.count
+            try await pause(2)
+            check(
+                attemptsAtLimit == 3 && app.itemManager.moves.count == attemptsAtLimit,
+                "successful gestures without layout progress stop at the failure limit"
+            )
+        }
+
+        if scenario == nil || scenario == "failed-item" {
+            let app = fixture()
+            let stuck = item("Unmovable")
+            let chat = item("ChatGPT")
+            app.itemManager.itemCache.items = [.hidden: [stuck], .alwaysHidden: [chat]]
+            app.layoutManager.recordCurrentLayout(reason: "preferred hidden sections")
+            app.itemManager.itemCache.items = [.visible: [stuck, chat]]
+            app.itemManager.failedItems = [stuck]
+            ScreenCapture.permitted = false
+            app.layoutManager.performSetup()
+            try await pause(2.2)
+            check(app.itemManager.itemCache.section(for: chat) == .alwaysHidden, "one exhausted item does not block another hidden section")
+        }
+
+        if scenario == nil || scenario == "failed-ice-icon" {
+            let app = fixture()
+            let icon = item("Ice")
+            let other = item("Visible")
+            let chat = item("Codex")
+            app.itemManager.itemCache.items = [.visible: [icon, other], .hidden: [chat]]
+            app.layoutManager.recordCurrentLayout(reason: "hidden Codex beside Ice")
+            app.itemManager.itemCache.items = [.visible: [other, icon, chat]]
+            app.itemManager.failedItems = [icon]
+            ScreenCapture.permitted = false
+            app.layoutManager.performSetup()
+            try await pause(2.2)
+            check(
+                app.itemManager.moves.filter { $0 == icon }.count == 3
+                    && app.itemManager.itemCache.section(for: chat) == .hidden,
+                "Ice icon restoration obeys the failure limit and cannot block hidden apps"
+            )
+        }
 
         if scenario == nil || scenario == "template-icons" {
             let app = fixture()
